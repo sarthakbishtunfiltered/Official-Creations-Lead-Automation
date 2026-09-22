@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Official Creations — Lead Automation</title>
+<link rel="stylesheet" href="css/style.css" />
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+</head>
+<body>
+  <div class="gate" id="gate">
+    <p class="brand">Official Creations</p>
+    <p class="brand-sub" style="margin-bottom:10px;">Lead Automation — Control Panel</p>
+    <p class="sub-msg" id="gateMsg">
+      Sign in with the Google account that has access to the Lead Database sheet.
+    </p>
+    <button class="btn-primary" id="signInBtn">Sign in with Google</button>
+  </div>
+
+  <script src="js/config.js"></script>
+  <script src="js/auth.js"></script>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const denied = params.get("denied");
+    if (denied) {
+      document.getElementById("gateMsg").innerHTML =
+        denied === "no_access"
+          ? "This Google account doesn't have access to the Lead Database sheet, so it can't access this dashboard. Ask a teammate to share the sheet with you, then try again."
+          : "Something went wrong signing in. Please try again.";
+    }
+
+    window.onload = () => {
+      Auth.init((result) => {
+        if (result.ok) {
+          window.location.href = "dashboard.html";
+        } else {
+          document.getElementById("gateMsg").textContent =
+            "Access denied — this account has no permission on the Lead Database sheet.";
+        }
+      });
+    };
+
+    document.getElementById("signInBtn").addEventListener("click", () => {
+      Auth.signIn();
+    });
+  </script>
+</body>
+</html>

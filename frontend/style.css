@@ -1,0 +1,354 @@
+/* ============================================================
+   Official Creations — Lead Automation Control Panel
+   Design: ledger/registry feel — this is a system of record,
+   not a generic SaaS dashboard. Serif for identity, plain
+   sans for data. Brass accent = "official seal" note.
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap');
+
+:root {
+  --ink: #14171F;
+  --ink-soft: #454A57;
+  --paper: #F6F4EF;
+  --paper-raised: #FFFFFF;
+  --line: #DEDACC;
+  --line-strong: #C7C0AC;
+  --brass: #9C7A2E;
+  --brass-deep: #7C6122;
+  --ok: #3F6D4E;
+  --ok-bg: #E7EFE7;
+  --warn: #A6472A;
+  --warn-bg: #F3E4DE;
+  --pending-bg: #EFE7D4;
+  --pending: #8A6A22;
+
+  --font-display: 'Source Serif 4', Georgia, serif;
+  --font-body: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --radius: 3px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+a { color: var(--brass-deep); }
+
+/* ---------- App shell ---------- */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid var(--line);
+  padding: 28px 20px;
+  background: var(--paper);
+  display: flex;
+  flex-direction: column;
+}
+
+.brand {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 19px;
+  letter-spacing: 0.2px;
+  color: var(--ink);
+  margin: 0 0 2px 0;
+}
+
+.brand-sub {
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin: 0 0 32px 0;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav a {
+  text-decoration: none;
+  color: var(--ink-soft);
+  font-size: 14px;
+  padding: 9px 10px;
+  border-radius: var(--radius);
+  border-left: 2px solid transparent;
+}
+
+.nav a:hover { background: rgba(0,0,0,0.03); color: var(--ink); }
+
+.nav a.active {
+  color: var(--ink);
+  border-left-color: var(--brass);
+  background: rgba(156,122,46,0.08);
+  font-weight: 500;
+}
+
+.sidebar-foot {
+  margin-top: auto;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.role-tag {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.3px;
+  padding: 2px 6px;
+  border-radius: 2px;
+  background: var(--pending-bg);
+  color: var(--pending);
+  margin-top: 4px;
+}
+
+.main {
+  padding: 32px 40px 60px;
+  max-width: 1180px;
+}
+
+.page-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.page-head h1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 26px;
+  margin: 0;
+}
+
+.page-head .sub {
+  color: var(--ink-soft);
+  font-size: 13.5px;
+}
+
+/* ---------- Cards / panels ---------- */
+
+.panel {
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px 22px;
+}
+
+.panel + .panel { margin-top: 18px; }
+
+.panel h2 {
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 0 14px 0;
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.stat {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  background: var(--paper-raised);
+}
+
+.stat .n {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.stat .label {
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin-top: 6px;
+}
+
+/* ---------- Status pill ---------- */
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 5px 12px;
+  border-radius: 20px;
+}
+
+.status-pill .dot {
+  width: 7px; height: 7px; border-radius: 50%;
+}
+
+.status-pill.running { background: var(--ok-bg); color: var(--ok); }
+.status-pill.running .dot { background: var(--ok); }
+
+.status-pill.stopped { background: rgba(0,0,0,0.05); color: var(--ink-soft); }
+.status-pill.stopped .dot { background: var(--ink-soft); }
+
+.status-pill.paused { background: var(--pending-bg); color: var(--pending); }
+.status-pill.paused .dot { background: var(--pending); }
+
+/* ---------- Buttons ---------- */
+
+button, .btn {
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  font-weight: 500;
+  padding: 9px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--paper-raised);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+button:hover { border-color: var(--ink-soft); }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper);
+}
+.btn-primary:hover { background: #000; }
+
+.btn-stop {
+  background: var(--warn-bg);
+  border-color: var(--warn-bg);
+  color: var(--warn);
+}
+
+.btn-quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-soft);
+}
+.btn-quiet:hover { color: var(--ink); border-color: transparent; background: rgba(0,0,0,0.03); }
+
+/* ---------- Forms ---------- */
+
+label {
+  display: block;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  margin-bottom: 5px;
+}
+
+input[type=text], input[type=number], input[type=tel], select, textarea {
+  width: 100%;
+  font-family: var(--font-body);
+  font-size: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--paper-raised);
+  color: var(--ink);
+}
+
+.field { margin-bottom: 14px; }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* ---------- Tables ---------- */
+
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+
+thead th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  letter-spacing: 0.3px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line-strong);
+  white-space: nowrap;
+}
+
+tbody td {
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+tbody tr:hover { background: rgba(0,0,0,0.015); }
+
+.lead-id { font-family: var(--font-mono); font-size: 12px; color: var(--ink-soft); }
+
+.score {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
+.priority-high { color: var(--warn); font-weight: 500; }
+.priority-med { color: var(--pending); }
+.priority-low { color: var(--ink-soft); }
+
+.toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.toolbar input[type=text] { max-width: 260px; }
+
+/* ---------- Access states ---------- */
+
+.gate {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 18px;
+  text-align: center;
+  padding: 24px;
+}
+
+.gate .brand { font-size: 24px; margin-bottom: 0; }
+.gate .sub-msg { color: var(--ink-soft); font-size: 14px; max-width: 360px; }
+
+.badge-readonly {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink-soft);
+  border: 1px solid var(--line-strong);
+  padding: 2px 7px;
+  border-radius: 2px;
+}
+
+.hidden { display: none !important; }
+
+.empty-state {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--ink-soft);
+  font-size: 14px;
+}

@@ -1,0 +1,35 @@
+name: Lead Automation Session
+
+# Checks every 5 minutes whether the website has requested a run
+# (Settings!Automation Status = RUNNING). If so, session_runner.py
+# drives back-to-back cycles until the requested run window ends
+# (hard-capped at 2 hours). If a session is already running or none
+# was requested, it exits immediately and does nothing.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: lead-automation-session
+  cancel-in-progress: false
+
+jobs:
+  run-session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 130 # hard cap: sessions are capped at 2 hours (120 min) max
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run session (if requested)
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        run: python session_runner.py
