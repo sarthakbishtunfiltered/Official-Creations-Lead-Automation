@@ -1,7 +1,3 @@
-// ============================================================
-// SHARED — nav shell, formatting helpers, polling utility.
-// ============================================================
-
 function renderShell(activePage) {
   const items = [
     ["dashboard.html", "Dashboard"],
@@ -12,11 +8,12 @@ function renderShell(activePage) {
   ];
 
   const role = Auth.getRole();
+
   const navHtml = items
-    .map(
-      ([href, label]) =>
-        `<a href="${href}" class="${href === activePage ? "active" : ""}">${label}</a>`
-    )
+    .map(([href, label]) => {
+      const active = href === activePage ? "active" : "";
+      return "<a href=\"" + href + "\" class=\"" + active + "\">" + label + "</a>";
+    })
     .join("");
 
   document.getElementById("shell").innerHTML = `

@@ -23,43 +23,62 @@ const SheetsAPI = (() => {
     return resp.status === 204 ? null : resp.json();
   }
 
-  // Returns { headers: [...], rows: [ {header: value, ...}, ... ] }
+  // For tabs WITH a real header row (Leads, Blacklisted, Called Rejected).
   async function getTable(tabName) {
     const data = await request(`/values/${encodeURIComponent(tabName)}`);
     const values = data.values || [];
     if (values.length === 0) return { headers: [], rows: [] };
     const [headers, ...rest] = values;
     const rows = rest.map((r, i) => {
-      const obj = { __rowIndex: i + 2 }; // sheet row number (1 = header)
+      const obj = { __rowIndex: i + 2 };
       headers.forEach((h, idx) => (obj[h] = r[idx] ?? ""));
       return obj;
     });
     return { headers, rows };
   }
 
+  // For plain key/value tabs with NO header row (Settings).
+  async function getKeyValuePairs(tabName) {
+    const data = await request(`/values/${encodeURIComponent(tabName)}!A:B`);
+    const values = data.values || [];
+    return values.map((row, i) => ({
+      key: (row[0] || "").toString(),
+      value: (row[1] || "").toString(),
+      rowIndex: i + 1,
+    }));
+  }
+
+  // Reads the exact option strings from a cell's own dropdown
+  // (data validation) rule — guarantees the website matches the
+  // Sheet's actual accepted values, character for character.
+  async function getDropdownOptions(a1CellRange /* e.g. "Settings!B1" */) {
+    const data = await request(
+      `?ranges=${encodeURIComponent(a1CellRange)}&fields=sheets(data(rowData(values(dataValidation))))`
+    );
+    try {
+      const cell = data.sheets[0].data[0].rowData[0].values[0];
+      const values = cell.dataValidation.condition.values || [];
+      return values.map((v) => v.userEnteredValue);
+    } catch (e) {
+      console.error(`Could not read dropdown options for ${a1CellRange}:`, e);
+      return [];
+    }
+  }
+
   async function appendRow(tabName, rowValuesInHeaderOrder) {
     return request(
       `/values/${encodeURIComponent(tabName)}:append?valueInputOption=USER_ENTERED`,
-      {
-        method: "POST",
-        body: JSON.stringify({ values: [rowValuesInHeaderOrder] }),
-      }
+      { method: "POST", body: JSON.stringify({ values: [rowValuesInHeaderOrder] }) }
     );
   }
 
-  // Update a single cell by A1 notation, e.g. "Leads!F5"
   async function updateCell(a1Range, value) {
     return request(
       `/values/${encodeURIComponent(a1Range)}?valueInputOption=USER_ENTERED`,
-      {
-        method: "PUT",
-        body: JSON.stringify({ values: [[value]] }),
-      }
+      { method: "PUT", body: JSON.stringify({ values: [[value]] }) }
     );
   }
 
-  // Delete a specific row from a tab by its sheet row number.
-  // Requires the tab's numeric sheetId (fetched once and cached).
   const sheetIdCache = {};
   async function getSheetId(tabName) {
     if (sheetIdCache[tabName] !== undefined) return sheetIdCache[tabName];
@@ -69,22 +88,13 @@ const SheetsAPI = (() => {
     return sheetIdCache[tabName];
   }
 
-  async function deleteRow(tabName, rowIndex /* 1-based sheet row */) {
+  async function deleteRow(tabName, rowIndex) {
     const sheetId = await getSheetId(tabName);
     return request(":batchUpdate", {
       method: "POST",
       body: JSON.stringify({
         requests: [
-          {
-            deleteDimension: {
-              range: {
-                sheetId,
-                dimension: "ROWS",
-                startIndex: rowIndex - 1,
-                endIndex: rowIndex,
-              },
-            },
-          },
+          { deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: rowIndex - 1, endIndex: rowIndex } } },
         ],
       }),
     });
@@ -93,8 +103,7 @@ const SheetsAPI = (() => {
   function colLetter(headers, headerName) {
     const idx = headers.indexOf(headerName);
     if (idx === -1) return null;
-    let n = idx + 1;
-    let s = "";
+    let n = idx + 1, s = "";
     while (n > 0) {
       const rem = (n - 1) % 26;
       s = String.fromCharCode(65 + rem) + s;
@@ -103,5 +112,5 @@ const SheetsAPI = (() => {
     return s;
   }
 
-  return { getTable, appendRow, updateCell, deleteRow, colLetter };
+  return { getTable, getKeyValuePairs, getDropdownOptions, appendRow, updateCell, deleteRow, colLetter };
 })();
