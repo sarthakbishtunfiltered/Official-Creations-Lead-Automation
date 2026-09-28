@@ -1,22 +1,14 @@
 // ============================================================
 // LEADS PAGE
-//
-// Checking the "Approve" box writes TRUE straight to that cell
-// in the Leads sheet (Editor only — Google enforces this via
-// the token, but we also hide the control for Viewers). Once
-// checked, a lead is expected to be excluded from the backend's
-// 48-hour deletion sweep — see the note added to Settings.
-//
-// Manually-added leads are appended with Approve = TRUE and
-// Lead Source = "Manual (Web)" straight away, since a
-// human-entered lead is considered already qualified.
 // ============================================================
 
-const LEAD_COLUMNS = [
-  "Lead ID", "Business Name", "Industry", "Location", "Phone",
-  "Instagram ID", "Lead Source", "Opportunity", "Buying Signal",
-  "Score", "Priority", "Approve", "Approval Reason",
-  "Reject After Call", "Status",
+const LEAD_FORM_FIELDS = [
+  { id: "f_business", label: "Business name *", col: "Business Name" },
+  { id: "f_industry", label: "Industry", col: "Industry" },
+  { id: "f_location", label: "Location *", col: "Location" },
+  { id: "f_phone", label: "Phone", col: "Phone", type: "tel" },
+  { id: "f_instagram", label: "Instagram ID", col: "Instagram ID" },
+  { id: "f_opportunity", label: "Opportunity / notes *", col: "Opportunity" },
 ];
 
 let allLeadRows = [];
@@ -25,6 +17,7 @@ let leadHeaders = [];
 Auth.requireSession(() => {
   renderShell("leads.html");
   const isEditor = Auth.isEditor();
+
   document.getElementById("mainContent").innerHTML = `
     <div class="page-head">
       <div>
@@ -45,34 +38,10 @@ Auth.requireSession(() => {
       </div>
       <div id="leadsTableWrap">Loading…</div>
     </div>
-
-    <div class="panel hidden" id="addLeadPanel">
-      <h2>Add a lead manually</h2>
-      <div class="field-row">
-        <div class="field"><label>Business name</label><input type="text" id="f_business" /></div>
-        <div class="field"><label>Industry</label><input type="text" id="f_industry" /></div>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>Location</label><input type="text" id="f_location" /></div>
-        <div class="field"><label>Phone</label><input type="tel" id="f_phone" /></div>
-      </div>
-      <div class="field-row">
-        <div class="field"><label>Instagram ID</label><input type="text" id="f_instagram" /></div>
-        <div class="field"><label>Opportunity / notes</label><input type="text" id="f_opportunity" /></div>
-      </div>
-      <button class="btn-primary" id="saveLeadBtn">Save lead</button>
-      <button class="btn-quiet" id="cancelLeadBtn">Cancel</button>
-    </div>
   `;
 
   if (isEditor) {
-    document.getElementById("addLeadBtn").addEventListener("click", () => {
-      document.getElementById("addLeadPanel").classList.remove("hidden");
-    });
-    document.getElementById("cancelLeadBtn").addEventListener("click", () => {
-      document.getElementById("addLeadPanel").classList.add("hidden");
-    });
-    document.getElementById("saveLeadBtn").addEventListener("click", saveManualLead);
+    document.getElementById("addLeadBtn").addEventListener("click", openLeadModal);
   }
 
   document.getElementById("searchInput").addEventListener("input", renderTable);
@@ -88,7 +57,7 @@ async function refresh() {
     allLeadRows = table.rows;
     renderTable();
   } catch (e) {
-    console.error(e);
+    console.error("Leads refresh failed:", e);
   }
 }
 
@@ -97,8 +66,8 @@ function renderTable() {
   const statusFilter = document.getElementById("statusFilter").value;
   const isEditor = Auth.isEditor();
 
-  let rows = allLeadRows.filter((r) => {
-    const haystack = `${r["Business Name"]} ${r["Industry"]} ${r["Location"]}`.toLowerCase();
+  const rows = allLeadRows.filter((r) => {
+    const haystack = (r["Business Name"] + " " + r["Industry"] + " " + r["Location"]).toLowerCase();
     if (search && !haystack.includes(search)) return false;
     if (statusFilter === "approved" && !truthy(r["Approve"])) return false;
     if (statusFilter === "pending" && truthy(r["Approve"])) return false;
@@ -106,7 +75,8 @@ function renderTable() {
   });
 
   if (rows.length === 0) {
-    document.getElementById("leadsTableWrap").innerHTML = `<div class="empty-state">No leads match this view.</div>`;
+    document.getElementById("leadsTableWrap").innerHTML =
+      '<div class="empty-state">No leads match this view.</div>';
     return;
   }
 
@@ -129,7 +99,11 @@ function renderTable() {
         <td>${escapeHtml(r["Lead Source"])}</td>
         <td class="score">${escapeHtml(r["Score"])}</td>
         <td class="${priorityClass(r["Priority"])}">${escapeHtml(r["Priority"])}</td>
-        <td>${escapeHtml(r["Status"])}</td>
+                <td>${escapeHtml(r["Status"])}</td>
+        ${isEditor ? `<td style="white-space:nowrap;">
+          <button class="btn-quiet" data-lead-action="blacklist" data-row="${r.__rowIndex}" style="padding:4px 8px;">Blacklist</button>
+          <button class="btn-quiet" data-lead-action="delete" data-row="${r.__rowIndex}" style="padding:4px 8px;color:var(--warn);">Delete</button>
+        </td>` : ""}
       </tr>`;
     })
     .join("");
@@ -140,7 +114,7 @@ function renderTable() {
         <tr>
           <th>Keep</th><th>Lead ID</th><th>Business</th><th>Industry</th>
           <th>Location</th><th>Phone</th><th>Source</th><th>Score</th>
-          <th>Priority</th><th>Status</th>
+                    <th>Priority</th><th>Status</th>${isEditor ? "<th></th>" : ""}
         </tr>
       </thead>
       <tbody>${rowsHtml}</tbody>
@@ -154,9 +128,12 @@ function renderTable() {
         e.target.disabled = true;
         try {
           await SheetsAPI.updateCell(
-            `${CONFIG.TABS.LEADS}!${approveColLetter}${rowIndex}`,
+            CONFIG.TABS.LEADS + "!" + approveColLetter + rowIndex,
             e.target.checked ? "TRUE" : "FALSE"
           );
+        } catch (err) {
+          console.error("Approve update failed:", err);
+          e.target.checked = !e.target.checked;
         } finally {
           e.target.disabled = false;
         }
@@ -164,34 +141,116 @@ function renderTable() {
     });
   }
 }
+function closeLeadModal() {
+  const existing = document.getElementById("leadModal");
+  if (existing) existing.remove();
+  document.removeEventListener("keydown", onModalKey);
+}
+
+function onModalKey(e) {
+  if (e.key === "Escape") closeLeadModal();
+}
+
+function openLeadModal() {
+  closeLeadModal();
+
+  const fieldsHtml = LEAD_FORM_FIELDS.map(
+    (f) => `
+      <div class="field">
+        <label for="${f.id}">${f.label}</label>
+        <input type="${f.type || "text"}" id="${f.id}" />
+      </div>`
+  ).join("");
+
+  const overlay = document.createElement("div");
+  overlay.id = "leadModal";
+  overlay.style.cssText =
+    "position:fixed;inset:0;background:rgba(20,23,31,0.45);z-index:1000;" +
+    "display:flex;align-items:center;justify-content:center;padding:20px;";
+
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:4px;padding:24px;width:100%;max-width:480px;max-height:90vh;overflow:auto;">
+      <h2 style="font-family:var(--font-display);font-size:20px;margin:0 0 4px;">Add a lead manually</h2>
+      <p class="sub" style="margin:0 0 16px;font-size:13px;">
+        Saved straight to the Leads sheet as a qualified lead.
+        Provide a phone number or an Instagram ID.
+      </p>
+      ${fieldsHtml}
+      <div id="leadFormError" style="color:var(--warn);font-size:13px;min-height:18px;margin-bottom:8px;"></div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn-primary" id="saveLeadBtn">Save lead</button>
+        <button id="cancelLeadBtn">Cancel</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeLeadModal();
+  });
+  document.getElementById("cancelLeadBtn").addEventListener("click", closeLeadModal);
+  document.getElementById("saveLeadBtn").addEventListener("click", saveManualLead);
+  document.addEventListener("keydown", onModalKey);
+
+  document.getElementById("f_business").focus();
+}
 
 async function saveManualLead() {
-  const values = LEAD_COLUMNS.map((col) => {
-    switch (col) {
-      case "Lead ID": return "MANUAL-" + Date.now();
-      case "Business Name": return document.getElementById("f_business").value;
-      case "Industry": return document.getElementById("f_industry").value;
-      case "Location": return document.getElementById("f_location").value;
-      case "Phone": return document.getElementById("f_phone").value;
-      case "Instagram ID": return document.getElementById("f_instagram").value;
-      case "Lead Source": return "Manual (Web)";
-      case "Opportunity": return document.getElementById("f_opportunity").value;
-      case "Approve": return "TRUE"; // manually-added leads are already qualified
-      case "Status": return "Active";
-      default: return "";
-    }
-  });
-
+  const errorBox = document.getElementById("leadFormError");
   const btn = document.getElementById("saveLeadBtn");
+
+  const val = (id) => document.getElementById(id).value.trim();
+
+  const business = val("f_business");
+  const location = val("f_location");
+  const phone = val("f_phone");
+  const instagram = val("f_instagram");
+  const opportunity = val("f_opportunity");
+
+  if (!business || !location || !opportunity) {
+    errorBox.textContent = "Business name, location and opportunity are required.";
+    return;
+  }
+  if (!phone && !instagram) {
+    errorBox.textContent = "Add at least a phone number or an Instagram ID.";
+    return;
+  }
+
+  errorBox.textContent = "";
   btn.disabled = true;
+  btn.textContent = "Saving…";
+
   try {
-    await SheetsAPI.appendRow(CONFIG.TABS.LEADS, values);
-    document.getElementById("addLeadPanel").classList.add("hidden");
-    ["f_business", "f_industry", "f_location", "f_phone", "f_instagram", "f_opportunity"].forEach(
-      (id) => (document.getElementById(id).value = "")
+    if (leadHeaders.length === 0) {
+      const table = await SheetsAPI.getTable(CONFIG.TABS.LEADS);
+      leadHeaders = table.headers;
+    }
+
+    const valuesByHeader = {
+      "Lead ID": "MANUAL-" + Date.now(),
+      "Business Name": business,
+      "Industry": val("f_industry"),
+      "Location": location,
+      "Phone": phone,
+      "Instagram ID": instagram,
+      "Lead Source": "Manual (Web)",
+      "Opportunity": opportunity,
+      "Approve": "TRUE",
+      "Status": "Active",
+    };
+
+    const row = leadHeaders.map((h) =>
+      Object.prototype.hasOwnProperty.call(valuesByHeader, h) ? valuesByHeader[h] : ""
     );
-    refresh();
-  } finally {
+
+    await SheetsAPI.appendRow(CONFIG.TABS.LEADS, row);
+    closeLeadModal();
+    await refresh();
+  } catch (e) {
+    console.error("Save lead failed:", e);
+    errorBox.textContent = "Could not save the lead. Check the browser console for details.";
     btn.disabled = false;
+    btn.textContent = "Save lead";
   }
 }
