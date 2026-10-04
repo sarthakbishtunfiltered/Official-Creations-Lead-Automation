@@ -24,7 +24,7 @@ Auth.requireSession(() => {
         <h1>Leads</h1>
         <div class="sub">Full lead database, synced live with Google Sheets</div>
       </div>
-      ${isEditor ? '<button class="btn-primary" id="addLeadBtn">+ Add lead manually</button>' : ""}
+      ${isEditor ? '<button class="btn-primary" id="addLeadBtn">+ Add lead manually</button> <button class="btn-quiet" id="cleanupBtn">Clean up blank rows</button>' : ""}
     </div>
 
     <div class="panel">
@@ -42,6 +42,17 @@ Auth.requireSession(() => {
 
   if (isEditor) {
     document.getElementById("addLeadBtn").addEventListener("click", openLeadModal);
+    document.getElementById("cleanupBtn").addEventListener("click", async () => {
+      const btn = document.getElementById("cleanupBtn");
+      btn.disabled = true;
+      btn.textContent = "Scanning…";
+      try {
+        await openCleanupModal();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Clean up blank rows";
+      }
+    });
   }
 
   document.getElementById("searchInput").addEventListener("input", renderTable);
