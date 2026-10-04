@@ -58,3 +58,16 @@ function truthy(v) {
   const s = String(v).trim().toLowerCase();
   return s === "true" || s === "yes" || s === "1" || s === "✓";
 }
+
+
+// A lead counts as "real" only once it has the basics filled in.
+// Blank or partial rows (e.g. a backend write that only got halfway
+// through) are hidden everywhere instead of showing up as clutter.
+function isRealLead(row) {
+  const businessName = String(row["Business Name"] || "").trim();
+  const location = String(row["Location"] || "").trim();
+  const phone = String(row["Phone"] || "").trim();
+  const instagram = String(row["Instagram ID"] || "").trim();
+  const opportunity = String(row["Opportunity"] || "").trim();
+  return Boolean(businessName && location && (phone || instagram) && opportunity);
+}

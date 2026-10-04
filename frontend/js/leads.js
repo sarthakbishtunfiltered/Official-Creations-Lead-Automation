@@ -52,9 +52,9 @@ Auth.requireSession(() => {
 
 async function refresh() {
   try {
-    const table = await SheetsAPI.getTable(CONFIG.TABS.LEADS);
+        const table = await SheetsAPI.getTable(CONFIG.TABS.LEADS);
     leadHeaders = table.headers;
-    allLeadRows = table.rows;
+    allLeadRows = table.rows.filter(isRealLead).sort((a, b) => b.__rowIndex - a.__rowIndex);
     renderTable();
   } catch (e) {
     console.error("Leads refresh failed:", e);
@@ -227,8 +227,10 @@ async function saveManualLead() {
       leadHeaders = table.headers;
     }
 
+    const leadId = await nextLeadId();
+
     const valuesByHeader = {
-      "Lead ID": "MANUAL-" + Date.now(),
+      "Lead ID": leadId,
       "Business Name": business,
       "Industry": val("f_industry"),
       "Location": location,

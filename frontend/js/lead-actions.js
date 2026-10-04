@@ -185,3 +185,26 @@ document.addEventListener("click", (e) => {
     });
   }
 });
+
+async function nextLeadId() {
+  // Re-read the sheet right now, so the number is based on the latest rows
+  const table = await SheetsAPI.getTable(CONFIG.TABS.LEADS);
+  leadHeaders = table.headers;
+
+  // Find the highest existing number, keeping its prefix and zero-padding.
+  // Old test IDs that start with "MANUAL-" are ignored.
+  let best = null;
+  table.rows.forEach((r) => {
+    const id = String(r["Lead ID"] || "").trim();
+    if (id.toUpperCase().startsWith("MANUAL-")) return;
+    const m = id.match(/^(.*?)(\d+)$/);
+    if (!m) return;
+    const num = parseInt(m[2], 10);
+    if (best === null || num > best.num) {
+      best = { prefix: m[1], num: num, width: m[2].length };
+    }
+  });
+
+  if (best === null) return "LEAD-0001";
+  return best.prefix + String(best.num + 1).padStart(best.width, "0");
+}
