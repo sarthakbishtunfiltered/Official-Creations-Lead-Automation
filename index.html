@@ -4,7 +4,8 @@
 <meta charset="UTF-8" />
 <title>Official Creations — Lead Automation</title>
 <link rel="stylesheet" href="frontend/style.css" />
-<script src="https://accounts.google.com/gsi/client" async defer></script>
+
+<script src="https://accounts.google.com/gsi/client"></script>
 </head>
 
 <body>
@@ -29,8 +30,9 @@
     <button
       class="btn-primary"
       id="signInBtn"
+      disabled
     >
-      Sign in with Google
+      Loading Google Sign-In…
     </button>
   </div>
 
@@ -59,25 +61,60 @@
           : "Something went wrong signing in. Please try again.";
     }
 
-    window.onload = () => {
+    function startAuth() {
+      if (
+        typeof google === "undefined" ||
+        !google.accounts ||
+        !google.accounts.oauth2
+      ) {
+        gateMsg.textContent =
+          "Google Sign-In could not load. Check your internet connection and refresh the page.";
+
+        signInBtn.disabled = true;
+        signInBtn.textContent = "Google Sign-In unavailable";
+        return;
+      }
+
+      signInBtn.disabled = false;
+      signInBtn.textContent = "Sign in with Google";
+
       Auth.init((result) => {
         if (result.ok) {
           window.location.href =
             "frontend/dashboard.html";
         }
       });
-
-      if (denied) {
-        showDeniedMessage(denied);
-      }
-    };
+    }
 
     signInBtn.addEventListener(
       "click",
       () => {
-        Auth.signIn();
+        if (
+          typeof google !== "undefined" &&
+          google.accounts &&
+          google.accounts.oauth2
+        ) {
+          Auth.signIn();
+        }
       }
     );
+
+    if (denied) {
+      showDeniedMessage(denied);
+    }
+
+    if (
+      typeof google !== "undefined" &&
+      google.accounts &&
+      google.accounts.oauth2
+    ) {
+      startAuth();
+    } else {
+      window.addEventListener(
+        "load",
+        startAuth
+      );
+    }
   </script>
 
 </body>
