@@ -1,4 +1,4 @@
-name: Lead Cleanup (Dry Run)
+name: Lead Cleanup
 
 on:
   schedule:
@@ -29,8 +29,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run cleanup in dry-run mode
+      - name: Run cleanup (deletes expired unapproved leads)
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-        run: python cleanup_leads.py
+        run: python cleanup_leads.py --execute
