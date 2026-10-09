@@ -251,6 +251,7 @@ async function saveManualLead() {
       "Opportunity": opportunity,
       "Approve": "TRUE",
       "Status": "Active",
+      "Created At": new Date().toISOString(),
     };
 
     const row = leadHeaders.map((h) =>

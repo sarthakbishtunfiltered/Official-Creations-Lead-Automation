@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -109,9 +111,7 @@ def verify_leads_headers(leads_sheet):
 
 def read_settings():
     settings_sheet = get_settings_sheet()
-
     rows = settings_sheet.get_all_values()
-
     settings = {}
 
     for row in rows:
@@ -123,11 +123,7 @@ def read_settings():
         if not key:
             continue
 
-        value = ""
-
-        if len(row) > 1:
-            value = row[1].strip()
-
+        value = row[1].strip() if len(row) > 1 else ""
         settings[key] = value
 
     return settings
@@ -135,15 +131,9 @@ def read_settings():
 
 def get_contact_requirement(settings):
     """
-    Contactability rule:
-
-    A lead is contactable when it has either:
-    - Phone
-    - Instagram ID
-
-    Both are not required.
+    A lead is contactable when it has either a phone
+    number or an Instagram ID.
     """
-
     return "Phone OR Instagram"
 
 
@@ -156,7 +146,6 @@ def is_contactable(phone="", instagram_id=""):
 
 def find_lead_row_by_business_name(business_name):
     leads_sheet = get_leads_sheet()
-
     business_name = str(business_name).strip().lower()
 
     if not business_name:
@@ -176,37 +165,57 @@ def find_lead_row_by_business_name(business_name):
 
 def get_all_leads():
     leads_sheet = get_leads_sheet()
-
-    records = leads_sheet.get_all_records()
-
-    return records
+    return leads_sheet.get_all_records()
 
 
 def append_lead(lead):
     """
-    Append one lead using the exact Leads column order.
+    Append one lead using the existing sheet headers.
 
-    Missing fields are written as empty values.
+    Existing notification columns are preserved.
+    Created At is populated with a UTC timestamp when
+    the caller has not supplied one.
     """
 
     leads_sheet = get_leads_sheet()
+    headers = get_headers(leads_sheet)
+    header_map = get_header_map(leads_sheet)
+
+    if "Created At" not in header_map:
+        raise RuntimeError(
+            "The Leads tab is missing the 'Created At' header. "
+            "Add 'Created At' to cell S1 before appending leads."
+        )
+
+    lead_data = dict(lead)
+
+    if not str(lead_data.get("Created At", "")).strip():
+        lead_data["Created At"] = (
+            datetime.now(timezone.utc).isoformat()
+        )
+
+    row_values = {
+        "Lead ID": lead_data.get("Lead ID", ""),
+        "Business Name": lead_data.get("Business Name", ""),
+        "Industry": lead_data.get("Industry", ""),
+        "Location": lead_data.get("Location", ""),
+        "Phone": lead_data.get("Phone", ""),
+        "Instagram ID": lead_data.get("Instagram ID", ""),
+        "Lead Source": lead_data.get("Lead Source", ""),
+        "Opportunity": lead_data.get("Opportunity", ""),
+        "Buying Signal": lead_data.get("Buying Signal", ""),
+        "Score": lead_data.get("Score", ""),
+        "Priority": lead_data.get("Priority", ""),
+        "Approve": lead_data.get("Approve", False),
+        "Approval Reason": lead_data.get("Approval Reason", ""),
+        "Reject After Call": lead_data.get("Reject After Call", False),
+        "Status": lead_data.get("Status", ""),
+        "Created At": lead_data["Created At"],
+    }
 
     row = [
-        lead.get("Lead ID", ""),
-        lead.get("Business Name", ""),
-        lead.get("Industry", ""),
-        lead.get("Location", ""),
-        lead.get("Phone", ""),
-        lead.get("Instagram ID", ""),
-        lead.get("Lead Source", ""),
-        lead.get("Opportunity", ""),
-        lead.get("Buying Signal", ""),
-        lead.get("Score", ""),
-        lead.get("Priority", ""),
-        lead.get("Approve", False),
-        lead.get("Approval Reason", ""),
-        lead.get("Reject After Call", False),
-        lead.get("Status", ""),
+        row_values.get(header.strip(), "")
+        for header in headers
     ]
 
     leads_sheet.append_row(
@@ -217,8 +226,9 @@ def append_lead(lead):
 
 def update_lead_row(row_number, lead):
     """
-    Update a complete lead row while preserving the
-    exact Leads column order.
+    Update the original A:O lead fields only.
+
+    Notification columns and Created At are preserved.
     """
 
     leads_sheet = get_leads_sheet()
@@ -254,11 +264,8 @@ def merge_contact_information(
     instagram_id="",
 ):
     """
-    Merge newly discovered contact information into an
-    existing lead instead of creating a duplicate.
-
-    Existing information is preserved unless the new
-    information fills a previously empty field.
+    Fill missing contact information without replacing
+    existing contact details.
     """
 
     if not existing_lead.get("Phone") and phone:
@@ -281,19 +288,30 @@ def test_connection():
     print("\nRequired tabs found:")
 
     for tab in REQUIRED_TABS:
-        print(f"✓ {tab}")
+        print(f"- {tab}")
 
     leads_sheet = spreadsheet.worksheet("Leads")
-
     verify_leads_headers(leads_sheet)
 
-    print("\nLeads headers verified:")
+    print("\nOriginal Leads headers verified:")
+
     for index, header in enumerate(LEADS_HEADERS, start=1):
         print(f"{index}. {header}")
+
+    headers = get_headers(leads_sheet)
+
+    if "Created At" in headers:
+        print("\nCreated At header verified.")
+    else:
+        print(
+            "\nWARNING: 'Created At' header is missing. "
+            "New leads cannot be appended until it is added."
+        )
 
     settings = read_settings()
 
     print("\nSettings:")
+
     if settings:
         for key, value in settings.items():
             print(f"{key}: {value}")
