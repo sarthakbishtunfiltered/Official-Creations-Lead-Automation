@@ -439,3 +439,52 @@ async function openCleanupModal() {
     },
   });
 }
+// Find every currently unapproved real lead, for the
+// "Remove unapproved leads" button. Bypasses the normal
+// 48-hour wait entirely — this deletes right now.
+async function scanUnapprovedLeadRows() {
+  const table = await SheetsAPI.getTable(CONFIG.TABS.LEADS);
+
+  return table.rows
+    .filter((r) => isRealLead(r) && !truthy(r["Approve"]))
+    .map((r) => ({
+      rowIndex: r.__rowIndex,
+      businessName: String(r["Business Name"] || "").trim(),
+    }));
+}
+
+async function openRemoveUnapprovedModal() {
+  closeActionModal();
+
+  const unapproved = await scanUnapprovedLeadRows();
+
+  openActionModal({
+    title: "Remove all unapproved leads?",
+    message:
+      unapproved.length === 0
+        ? "No unapproved leads were found in the Leads sheet."
+        : "Found " +
+          unapproved.length +
+          ' unapproved lead(s) (e.g. "' +
+          (unapproved[0].businessName || "unnamed") +
+          '"). This permanently deletes them from Google Sheets right now, regardless of the normal 48-hour wait. This cannot be undone.',
+    confirmText:
+      unapproved.length === 0
+        ? "OK"
+        : "Delete " + unapproved.length + " lead(s)",
+    danger: true,
+
+    onConfirm: async () => {
+      if (unapproved.length === 0) {
+        return;
+      }
+
+      await SheetsAPI.deleteRows(
+        CONFIG.TABS.LEADS,
+        unapproved.map((u) => u.rowIndex)
+      );
+
+      await refresh();
+    },
+  });
+}
