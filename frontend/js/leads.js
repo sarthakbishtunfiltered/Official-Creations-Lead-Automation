@@ -17,6 +17,7 @@ let leadHeaders = [];
 Auth.requireSession(() => {
   renderShell("leads.html");
   const isEditor = Auth.isEditor();
+  const notifyConfigured = !!(CONFIG.NOTIFY_WEBHOOK_URL && CONFIG.NOTIFY_WEBHOOK_URL.trim());
 
   document.getElementById("mainContent").innerHTML = `
     <div class="page-head">
@@ -24,7 +25,7 @@ Auth.requireSession(() => {
         <h1>Leads</h1>
         <div class="sub">Full lead database, synced live with Google Sheets</div>
       </div>
-      ${isEditor ? '<button class="btn-primary" id="addLeadBtn">+ Add lead manually</button> <button class="btn-quiet" id="cleanupBtn">Clean up blank rows</button> <button class="btn-quiet" id="removeUnapprovedBtn" style="color:var(--warn);">Remove unapproved leads</button>' : ""}
+      ${isEditor ? '<button class="btn-primary" id="addLeadBtn">+ Add lead manually</button> <button class="btn-quiet" id="cleanupBtn">Clean up blank rows</button> <button class="btn-quiet" id="removeUnapprovedBtn" style="color:var(--warn);">Remove unapproved leads</button>' + (notifyConfigured ? ' <button class="btn-quiet" id="sendNotifyBtn">Send notifications now</button>' : "") : ""}
       </div>
     </div>
 
@@ -67,6 +68,30 @@ Auth.requireSession(() => {
         btn.textContent = "Remove unapproved leads";
       }
     });
+
+    if (notifyConfigured) {
+      document.getElementById("sendNotifyBtn").addEventListener("click", async () => {
+        const btn = document.getElementById("sendNotifyBtn");
+        const original = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = "Sending…";
+        try {
+          const result = await runNotifyNow();
+          btn.textContent =
+            result && typeof result.sent === "number"
+              ? `Sent ${result.sent}` + (result.retried ? `, ${result.retried} to retry` : "")
+              : "Sent";
+        } catch (e) {
+          console.error("Send notifications failed:", e);
+          btn.textContent = "Failed — see console";
+        } finally {
+          setTimeout(() => {
+            btn.disabled = false;
+            btn.textContent = original;
+          }, 3000);
+        }
+      });
+    }
   }
 
   document.getElementById("searchInput").addEventListener("input", renderTable);

@@ -4,108 +4,86 @@ from google_sheets import (
     get_blacklisted_sheet,
     get_called_rejected_sheet,
     get_settings_sheet,
+    get_learning_sheet,
     read_settings,
     verify_required_tabs,
     verify_leads_headers,
     get_contact_requirement,
 )
+from session_runner import run_session
 
 
 def main():
     print("Starting OC Lead Automation...\n")
 
-    spreadsheet = connect_to_sheet()
+    try:
+        spreadsheet = connect_to_sheet()
+        print("Google Sheets connection successful.")
+        print(f"Spreadsheet: {spreadsheet.title}\n")
 
-    print("Google Sheets connection successful.")
-    print(f"Spreadsheet: {spreadsheet.title}\n")
+        verify_required_tabs(spreadsheet)
 
-    # ---------------------------------------------------------
-    # VERIFY REQUIRED TABS
-    # ---------------------------------------------------------
+        print("REQUIRED TABS:")
+        required_tabs = [
+            "Leads",
+            "Called Rejected",
+            "Settings",
+            "Blacklisted",
+            "Learning Data",
+        ]
 
-    verify_required_tabs(spreadsheet)
+        available_tabs = {worksheet.title for worksheet in spreadsheet.worksheets()}
 
-    print("REQUIRED TABS:")
+        for tab_name in required_tabs:
+            if tab_name not in available_tabs:
+                raise RuntimeError(
+                    f"Required tab '{tab_name}' is missing. "
+                    "Create it before running the automation."
+                )
+            print(f"✓ {tab_name}")
 
-    for tab_name in [
-        "Leads",
-        "Called Rejected",
-        "Settings",
-        "Blacklisted",
-    ]:
-        print(f"✓ {tab_name}")
+        leads = get_leads_sheet()
+        verify_leads_headers(leads)
 
-    # ---------------------------------------------------------
-    # VERIFY LEADS STRUCTURE
-    # ---------------------------------------------------------
+        print("\nLEADS HEADERS:")
+        for index, header in enumerate(leads.row_values(1), start=1):
+            print(f"{index}. {header}")
 
-    leads = get_leads_sheet()
+        settings = read_settings()
 
-    verify_leads_headers(leads)
-
-    print("\nLEADS HEADERS:")
-
-    for index, header in enumerate(
-        leads.row_values(1),
-        start=1,
-    ):
-        print(f"{index}. {header}")
-
-    # ---------------------------------------------------------
-    # READ SETTINGS
-    # ---------------------------------------------------------
-
-    settings = read_settings()
-
-    print("\nSETTINGS:")
-
-    if settings:
+        print("\nSETTINGS:")
         for key, value in settings.items():
             print(f"{key}: {value}")
-    else:
-        print("No settings values entered yet.")
 
-    # ---------------------------------------------------------
-    # CONTACTABILITY
-    # ---------------------------------------------------------
+        print("\nCONTACT REQUIREMENT:")
+        print(get_contact_requirement(settings))
 
-    print("\nCONTACT REQUIREMENT:")
-    print(get_contact_requirement(settings))
+        blacklisted = get_blacklisted_sheet()
+        called_rejected = get_called_rejected_sheet()
+        settings_sheet = get_settings_sheet()
+        learning_sheet = get_learning_sheet()
 
-    # ---------------------------------------------------------
-    # OTHER TABS
-    # ---------------------------------------------------------
+        print("\nOTHER TAB HEADERS:")
+        for title, worksheet in [
+            ("BLACKLISTED", blacklisted),
+            ("CALLED REJECTED", called_rejected),
+            ("SETTINGS", settings_sheet),
+            ("LEARNING DATA", learning_sheet),
+        ]:
+            print(f"\n{title}:")
+            for index, header in enumerate(worksheet.row_values(1), start=1):
+                print(f"{index}. {header}")
 
-    blacklisted = get_blacklisted_sheet()
-    called_rejected = get_called_rejected_sheet()
-    settings_sheet = get_settings_sheet()
+        print("\n----------------------------------------")
+        print("Google Sheets foundation verified.")
+        print("----------------------------------------\n")
 
-    print("\nOTHER TAB HEADERS:")
+        print("Starting automation session...\n")
+        run_session()
 
-    print("\nBLACKLISTED:")
-    for index, header in enumerate(
-        blacklisted.row_values(1),
-        start=1,
-    ):
-        print(f"{index}. {header}")
-
-    print("\nCALLED REJECTED:")
-    for index, header in enumerate(
-        called_rejected.row_values(1),
-        start=1,
-    ):
-        print(f"{index}. {header}")
-
-    print("\nSETTINGS:")
-    for index, header in enumerate(
-        settings_sheet.row_values(1),
-        start=1,
-    ):
-        print(f"{index}. {header}")
-
-    print("\n----------------------------------------")
-    print("OC Lead Automation foundation verified.")
-    print("----------------------------------------")
+    except Exception as exc:
+        print(f"\nERROR: {exc}")
+        raise
 
 
 if __name__ == "__main__":

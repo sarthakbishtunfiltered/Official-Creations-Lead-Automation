@@ -488,3 +488,38 @@ async function openRemoveUnapprovedModal() {
     },
   });
 }
+
+// Call the Apps Script Web App to send any pending approved-lead
+// notifications right now, instead of waiting for the 5-minute
+// GitHub Action poll or the instant onLeadApproved trigger.
+// Safe to call anytime -- it only sends for leads that are approved
+// and not yet marked Slack/Telegram Notified, same as notifier.py.
+async function runNotifyNow() {
+  if (!CONFIG.NOTIFY_WEBHOOK_URL || !CONFIG.NOTIFY_WEBHOOK_URL.trim()) {
+    throw new Error(
+      "Notification webhook URL is not configured in config.js."
+    );
+  }
+
+  const url =
+    CONFIG.NOTIFY_WEBHOOK_URL +
+    "?secret=" +
+    encodeURIComponent(CONFIG.NOTIFY_WEBHOOK_SECRET || "");
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(
+      "Notify webhook " + response.status + ": " + body
+    );
+  }
+
+  const data = await response.json().catch(() => ({}));
+
+  if (data && data.ok === false) {
+    throw new Error(data.error || "Notify webhook reported an error.");
+  }
+
+  return data;
+}

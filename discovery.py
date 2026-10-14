@@ -1,367 +1,1041 @@
-"""Official Creations Lead Automation: multi-query business discovery.
-
-Uses OpenStreetMap/Overpass plus public Bing RSS search.
-Search queries are prioritized using historical review outcomes.
-No paid AI API is required.
-"""
-import html
+import os
 import re
+import json
 import time
-import xml.etree.ElementTree as ET
-from typing import Any
-from urllib.parse import urlparse
-
+import hashlib
+import logging
 import requests
+import xml.etree.ElementTree as ET
+
+from urllib.parse import (
+    urlparse,
+    quote_plus,
+    unquote,
+)
+
+logger = logging.getLogger(__name__)
+
+REQUEST_TIMEOUT = 15
+MAX_QUERIES_PER_INDUSTRY_LOCATION = 8
+MAX_RESULTS_PER_QUERY = 20
 
 HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+    )
+}
+
+# OSM/Nominatim ask for a real, descriptive User-Agent rather than a
+# browser impersonation, so these use their own headers.
+OSM_HEADERS = {
     "User-Agent": "OfficialCreationsLeadAutomation/1.0 (business discovery)"
 }
-REQUEST_TIMEOUT = 20
+
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 OVERPASS_FALLBACK_URLS = [
     "https://overpass.kumi.systems/api/interpreter",
     "https://overpass.private.coffee/api/interpreter",
 ]
-NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-BING_RSS_URL = "https://www.bing.com/search"
 
-INDUSTRY_ALIASES = {
-    "interior designer": "Interior designers",
-    "interior designers": "Interior designers",
-    "interior design": "Interior designers",
-    "wedding photographer": "Wedding & event photographers",
-    "wedding photographers": "Wedding & event photographers",
-    "event photographer": "Wedding & event photographers",
-    "event photographers": "Wedding & event photographers",
-    "photography studio": "Wedding & event photographers",
-    "salon": "Boutique/women salon owners",
-    "beauty salon": "Boutique/women salon owners",
-    "boutique": "Boutique/women salon owners",
-    "cloud kitchen": "Cloud kitchens run by homemakers",
-    "cloud kitchens": "Cloud kitchens run by homemakers",
-    "home bakery": "Cloud kitchens run by homemakers",
-    "architect": "Freelance architects & small design firms",
-    "architects": "Freelance architects & small design firms",
-    "architecture": "Freelance architects & small design firms",
-    "event decorator": "Event decorators",
-    "event decorators": "Event decorators",
-    "doctor": "Independent doctors/dentists/clinics",
-    "dentist": "Independent doctors/dentists/clinics",
-    "clinic": "Independent doctors/dentists/clinics",
-    "real estate agent": "Real estate agents/brokers",
-    "real estate broker": "Real estate agents/brokers",
-    "driving school": "Driving schools",
-    "ca firm": "CA firms & small legal practices",
-    "chartered accountant": "CA firms & small legal practices",
-    "law firm": "CA firms & small legal practices",
-}
-
-INDUSTRY_SEARCH_TERMS = {
-    "Interior designers": [
-        "interior designer", "interior design studio", "interior decorator",
-        "home interior design", "residential interior designer",
-        "commercial interior design", "modular kitchen designer",
-        "interior design consultancy",
-    ],
-    "Wedding & event photographers": [
-        "wedding photographer", "event photographer", "photography studio",
-        "wedding photography studio", "pre wedding photographer",
-        "candid wedding photographer", "event photography company",
-    ],
-    "Boutique/women salon owners": [
-        "women salon", "beauty salon", "boutique", "ladies salon",
-        "hair and beauty studio", "beauty parlour",
-        "women's clothing boutique",
-    ],
-    "Cloud kitchens run by homemakers": [
-        "cloud kitchen", "home bakery", "home food business", "home chef",
-        "tiffin service", "cake studio", "home-based catering",
-    ],
-    "Freelance architects & small design firms": [
-        "architect", "architecture studio", "design firm",
-        "residential architect", "architectural consultancy",
-        "independent architect", "small architecture firm",
-    ],
-    "Event decorators": [
-        "event decorator", "wedding decorator", "event planner",
-        "wedding stage decorator", "party decorator", "event design studio",
-    ],
-    "Independent doctors/dentists/clinics": [
-        "independent clinic", "dentist", "doctor clinic", "dental clinic",
-        "family clinic", "skin clinic", "physiotherapy clinic",
-    ],
-    "Real estate agents/brokers": [
-        "real estate agent", "property broker", "real estate consultant",
-        "independent property consultant", "real estate agency",
-        "property dealer",
-    ],
-    "Driving schools": [
-        "driving school", "driving institute", "motor driving school",
-        "car driving classes", "driving training centre",
-    ],
-    "CA firms & small legal practices": [
-        "chartered accountant", "CA firm", "law firm",
-        "independent chartered accountant", "tax consultant",
-        "small legal practice", "accounting firm",
-    ],
-}
-
-BUYING_SIGNAL_TERMS = [
-    "need a website", "website required", "looking for a website",
-    "website developer", "website development", "recommend a web developer",
-    "recommend a website designer", "website redesign", "redesign our website",
-    "improve our website", "website not working", "poor website",
-    "outdated website", "digital marketing", "social media management",
-    "branding agency", "online presence",
+# Keyword-matched rather than an exact-name table, so a Settings value
+# like "Interior Designer" still matches without needing a canonical
+# industry name to be configured first.
+INDUSTRY_OSM_KEYWORDS = [
+    (
+        ("interior",),
+        [
+            '["craft"="interior_decorator"]',
+            '["office"="interior_design"]',
+            '["shop"="interior_decoration"]',
+        ],
+    ),
+    (
+        ("photograph",),
+        [
+            '["craft"="photographer"]',
+            '["shop"="photo"]',
+            '["office"="photographer"]',
+        ],
+    ),
+    (
+        ("salon", "boutique", "beauty"),
+        [
+            '["shop"="beauty"]',
+            '["shop"="hairdresser"]',
+            '["shop"="clothes"]',
+        ],
+    ),
+    (
+        ("cloud kitchen", "bakery", "home chef", "tiffin"),
+        [
+            '["amenity"="fast_food"]',
+            '["amenity"="restaurant"]',
+            '["shop"="bakery"]',
+        ],
+    ),
+    (
+        ("architect",),
+        ['["office"="architect"]', '["craft"="architect"]'],
+    ),
+    (
+        ("decorator", "event"),
+        [
+            '["office"="event_management"]',
+            '["craft"="event_decorator"]',
+        ],
+    ),
+    (
+        ("doctor", "dentist", "clinic"),
+        [
+            '["amenity"="doctors"]',
+            '["amenity"="dentist"]',
+            '["healthcare"="clinic"]',
+        ],
+    ),
+    (
+        ("real estate", "broker", "property"),
+        ['["office"="estate_agent"]'],
+    ),
+    (
+        ("driving school",),
+        ['["amenity"="driving_school"]'],
+    ),
+    (
+        ("chartered accountant", "ca firm", "law firm", "legal"),
+        ['["office"="accountant"]', '["office"="lawyer"]'],
+    ),
 ]
 
-INDUSTRY_OSM_FILTERS = {
-    "Interior designers": [
-        '["craft"="interior_decorator"]',
-        '["office"="interior_design"]',
-        '["shop"="interior_decoration"]',
-    ],
-    "Wedding & event photographers": [
-        '["craft"="photographer"]',
-        '["shop"="photo"]',
-        '["office"="photographer"]',
-    ],
-    "Boutique/women salon owners": [
-        '["shop"="beauty"]',
-        '["shop"="hairdresser"]',
-        '["shop"="clothes"]',
-    ],
-    "Cloud kitchens run by homemakers": [
-        '["amenity"="fast_food"]',
-        '["amenity"="restaurant"]',
-        '["shop"="bakery"]',
-    ],
-    "Freelance architects & small design firms": [
-        '["office"="architect"]',
-        '["craft"="architect"]',
-    ],
-    "Event decorators": [
-        '["office"="event_management"]',
-        '["craft"="event_decorator"]',
-    ],
-    "Independent doctors/dentists/clinics": [
-        '["amenity"="doctors"]',
-        '["amenity"="dentist"]',
-        '["healthcare"="clinic"]',
-    ],
-    "Real estate agents/brokers": [
-        '["office"="estate_agent"]',
-    ],
-    "Driving schools": [
-        '["amenity"="driving_school"]',
-    ],
-    "CA firms & small legal practices": [
-        '["office"="accountant"]',
-        '["office"="lawyer"]',
-    ],
+SOCIAL_HOSTS = {
+    "instagram.com",
+    "www.instagram.com",
+    "facebook.com",
+    "www.facebook.com",
+    "linkedin.com",
+    "www.linkedin.com",
+    "youtube.com",
+    "www.youtube.com",
+    "tiktok.com",
+    "www.tiktok.com",
+    "x.com",
+    "www.x.com",
+    "twitter.com",
+    "www.twitter.com",
 }
 
-NON_BUSINESS_DOMAINS = {
-    "facebook.com", "instagram.com", "linkedin.com", "youtube.com",
-    "wikipedia.org", "reddit.com", "pinterest.com", "x.com",
-    "twitter.com", "justdial.com", "sulekha.com", "indiamart.com",
-    "tradeindia.com", "yelp.com", "tripadvisor.com",
+DIRECTORY_HOSTS = {
+    "justdial.com",
+    "www.justdial.com",
+    "sulekha.com",
+    "www.sulekha.com",
+    "indiamart.com",
+    "www.indiamart.com",
+    "tradeindia.com",
+    "www.tradeindia.com",
+    "magicbricks.com",
+    "www.magicbricks.com",
+    "99acres.com",
+    "www.99acres.com",
+    "yelp.com",
+    "www.yelp.com",
+    "google.com",
+    "www.google.com",
+    "bing.com",
+    "www.bing.com",
+    "mapquest.com",
+    "www.mapquest.com",
+    # Large aggregator/marketplace platforms. These are real companies
+    # with real websites, so qualification correctly rejects them as
+    # "has a website" -- but they dominate Bing's organic results for
+    # "<industry> <location>"-style queries and crowd out the small
+    # independent businesses this project is actually looking for, so
+    # they are excluded at discovery time rather than relying on
+    # qualification to filter every one of them out individually.
+    "livspace.com",
+    "www.livspace.com",
+    "homelane.com",
+    "www.homelane.com",
+    "designcafe.com",
+    "www.designcafe.com",
+    "bonitodesigns.in",
+    "www.bonitodesigns.in",
+    "houzz.com",
+    "www.houzz.com",
+    "houzz.in",
+    "www.houzz.in",
+    "urbancompany.com",
+    "www.urbancompany.com",
+    "urbanclap.com",
+    "www.urbanclap.com",
+    "weddingwire.in",
+    "www.weddingwire.in",
+    "weddingwire.com",
+    "www.weddingwire.com",
+    "wedmegood.com",
+    "www.wedmegood.com",
+    "weddingz.in",
+    "www.weddingz.in",
+    "shaadisaga.com",
+    "www.shaadisaga.com",
+    "hometriangle.com",
+    "www.hometriangle.com",
+    "urbanpro.com",
+    "www.urbanpro.com",
+    "practo.com",
+    "www.practo.com",
+    "nobroker.in",
+    "www.nobroker.in",
+    "housejoy.in",
+    "www.housejoy.in",
+    # Generic reference/informational sites -- never a business listing.
+    "wikipedia.org",
+    "quora.com",
+    "www.quora.com",
+    "reddit.com",
+    "www.reddit.com",
+    "pinterest.com",
+    "www.pinterest.com",
+    "weddingbazaar.com",
+    "www.weddingbazaar.com",
 }
 
-GENERIC_TITLE_TERMS = (
-    "top 10", "best of", "list of", "directory", "near me",
-    "how to", "what is", "ideas for", "examples of", "guide to",
-    "jobs in", "salary of", "course for", "meaning of",
-)
+GENERIC_NAMES = {
+    "",
+    "home",
+    "homepage",
+    "search",
+    "results",
+    "instagram",
+    "facebook",
+    "business",
+    "website",
+    "click here",
+    "read more",
+    "official website",
+}
+
+GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+]
 
 
-def _text(value: Any) -> str:
-    return html.unescape(str(value or "")).strip()
+def _text(value):
+    if value is None:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
 
 
-def _normalise(value: Any) -> str:
-    return re.sub(r"\s+", " ", _text(value)).strip().lower()
+def _normalise(value):
+    return _text(value).lower()
 
 
-def _as_list(value: Any) -> list[str]:
-    if isinstance(value, (list, tuple, set)):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if not _text(value):
+def _as_list(value):
+    if value is None:
         return []
+
+    if isinstance(value, (list, tuple, set)):
+        return [_text(item) for item in value if _text(item)]
+
     return [
         item.strip()
-        for item in re.split(r"[,;\n]+", _text(value))
+        for item in re.split(r"[,;\n]", str(value))
         if item.strip()
     ]
 
 
-def _normalise_key(value: Any) -> str:
-    """Normalise a Settings label for comparison.
+def _setting(settings, *names, default=""):
+    if not isinstance(settings, dict):
+        return default
 
-    Lowercases and strips every non-alphanumeric character (spaces,
-    slashes, underscores, hyphens, punctuation) so that label variants
-    such as "Cities / Locations", "Cities/Locations", "cities_locations"
-    and "CITIES-LOCATIONS" all compare equal. This matches the same
-    approach already used in qualification.py's _setting().
-    """
-    return re.sub(r"[^a-z0-9]", "", _normalise(value))
-
-
-def _setting(settings: dict, *names: str, default=None):
-    settings = settings or {}
     normalised = {
-        _normalise_key(key): value
+        _normalise(key): value
         for key, value in settings.items()
     }
+
     for name in names:
-        key = _normalise_key(name)
-        if key in normalised and _text(normalised[key]):
+        key = _normalise(name)
+        if key in normalised:
             return normalised[key]
+
     return default
 
 
-def _locations_from_settings(settings: dict) -> list[str]:
-    value = _setting(
-        settings, "Cities/Locations", "Locations", "Cities",
-        "Target Locations", default=""
+def _industries_from_settings(settings):
+    return _as_list(
+        _setting(
+            settings,
+            "Industries",
+            "Selected Industries",
+            "Industry",
+            default="",
+        )
     )
-    return _as_list(value)
 
 
-def _industries_from_settings(settings: dict) -> list[str]:
-    value = _setting(
-        settings, "Industries", "Target Industries",
-        "Industry", default=""
+def _locations_from_settings(settings):
+    return _as_list(
+        _setting(
+            settings,
+            "Cities / Locations",
+            "Locations",
+            "Selected Locations",
+            "Cities",
+            default="",
+        )
     )
-    return [canonical_industry(item) for item in _as_list(value)]
 
 
-def _phone(value: Any) -> str:
+def _phone(value):
     digits = re.sub(r"\D", "", _text(value))
-    if len(digits) < 7:
+
+    if len(digits) < 10:
         return ""
+
+    if len(digits) > 13:
+        return ""
+
     return digits
 
 
-def canonical_industry(industry: str) -> str:
-    original = _text(industry)
-    key = _normalise(original)
-    if key in INDUSTRY_ALIASES:
-        return INDUSTRY_ALIASES[key]
-
-    for known in INDUSTRY_SEARCH_TERMS:
-        if key == _normalise(known):
-            return known
-
-    return original
-
-
-def find_industry_tags(industry: str) -> list[str]:
-    canonical = canonical_industry(industry)
-    return INDUSTRY_SEARCH_TERMS.get(
-        canonical, [canonical] if canonical else []
-    )
-
-
-def generate_search_queries(
-    industry: str,
-    location: str,
-    settings: dict | None = None,
-    max_queries: int | None = None,
-    learning_records: list[dict] | None = None,
-) -> list[str]:
-    """Generate location-specific queries and rank using review history."""
-    settings = settings or {}
-    canonical = canonical_industry(industry)
-    terms = INDUSTRY_SEARCH_TERMS.get(
-        canonical, [canonical] if canonical else []
-    )
-
-    if not terms or not _text(location):
+def _extract_phones(text):
+    if not text:
         return []
 
-    configured_limit = _setting(
-        settings, "Max Search Queries", "Search Query Limit",
-        "Queries Per Industry Location", default=8
-    )
-
-    try:
-        configured_limit = int(configured_limit)
-    except (TypeError, ValueError):
-        configured_limit = 8
-
-    limit = max(
-        1,
-        min(
-            int(max_queries if max_queries is not None else configured_limit),
-            30,
-        ),
-    )
-
     patterns = [
-        lambda term: f'"{term}" "{location}"',
-        lambda term: f"{term} in {location} India contact",
-        lambda term: f"{term} studio {location}",
-        lambda term: f"independent {term} {location}",
-        lambda term: f"small {term} firm {location}",
-        lambda term: f"{term} near {location} phone",
-        lambda term: f"{term} {location} official website",
-        lambda term: f"{term} {location} Instagram",
-        lambda term: f"{term} projects portfolio {location}",
-        lambda term: f"{term} {location} owner contact",
-        lambda term: f"{term} {location} recently opened",
-        lambda term: f"{term} {location} business profile",
+        r"(?:\+?91[\s.-]?)?[6-9]\d{9}",
+        r"\+?\d[\d\s().-]{8,16}\d",
     ]
 
-    queries = []
+    found = []
     seen = set()
 
     for pattern in patterns:
-        for term in terms:
-            query = _text(pattern(term))
-            if query.lower() not in seen:
-                seen.add(query.lower())
-                queries.append(query)
-            if len(queries) >= limit:
-                break
-        if len(queries) >= limit:
-            break
+        for match in re.findall(pattern, text):
+            number = _phone(match)
 
-    # Only explicit approved/rejected outcomes influence query ordering.
-    outcomes = {}
+            if number and number not in seen:
+                seen.add(number)
+                found.append(number)
 
-    for record in learning_records or []:
-        query = _normalise(record.get("Search Query"))
-        outcome = _normalise(record.get("Review Outcome"))
+    return found
+
+
+def _canonical_url(url):
+    url = unquote(_text(url))
+
+    if not url:
+        return ""
+
+    if url.startswith("//"):
+        url = "https:" + url
+
+    if not re.match(r"^https?://", url, re.I):
+        url = "https://" + url
+
+    try:
+        parsed = urlparse(url)
+
+        if not parsed.hostname:
+            return ""
+
+        if parsed.scheme not in {"http", "https"}:
+            return ""
+
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+
+    except Exception:
+        return ""
+
+
+def _host(url):
+    try:
+        return (urlparse(_canonical_url(url)).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def _is_social_url(url):
+    hostname = _host(url)
+
+    return (
+        hostname in SOCIAL_HOSTS
+        or any(
+            hostname.endswith("." + host)
+            for host in SOCIAL_HOSTS
+        )
+    )
+
+
+def _is_directory_url(url):
+    hostname = _host(url)
+
+    return (
+        hostname in DIRECTORY_HOSTS
+        or any(
+            hostname.endswith("." + host)
+            for host in DIRECTORY_HOSTS
+        )
+    )
+
+
+def _is_official_website_url(url):
+    if not url:
+        return False
+
+    hostname = _host(url)
+
+    if not hostname:
+        return False
+
+    if _is_social_url(url) or _is_directory_url(url):
+        return False
+
+    if hostname.endswith(".gov.in") or hostname.endswith(".nic.in"):
+        return True
+
+    return "." in hostname
+
+
+def _stable_id(*parts):
+    raw = "|".join(_normalise(part) for part in parts)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _get(url, params=None):
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+        )
+
+        if response.status_code >= 400:
+            return None
+
+        return response
+
+    except requests.RequestException as exc:
+        logger.debug("Request failed for %s: %s", url, exc)
+        return None
+
+
+def _bing_search(query, limit=MAX_RESULTS_PER_QUERY):
+    """
+    Fetch public Bing RSS search results.
+
+    This does not use the Google Maps API.
+    Search results may be incomplete or rate-limited.
+    """
+    response = _get(
+        "https://www.bing.com/search",
+        params={
+            "q": query,
+            "format": "rss",
+            "count": min(limit, 50),
+        },
+    )
+
+    if response is None:
+        response = _get(
+            "https://www.bing.com/search",
+            params={
+                "q": query,
+                "format": "rss",
+            },
+        )
+
+    if response is None:
+        return []
+
+    try:
+        root = ET.fromstring(response.text)
+    except ET.ParseError:
+        return []
+
+    results = []
+
+    for item in root.findall(".//item"):
+        title = _text(item.findtext("title"))
+        link = _text(item.findtext("link"))
+        description = _text(item.findtext("description"))
+        pub_date = _text(item.findtext("pubDate"))
+
+        if not title or not link:
+            continue
+
+        results.append({
+            "title": title,
+            "url": _canonical_url(link),
+            "snippet": description,
+            "date": pub_date,
+            "query": query,
+        })
+
+    return results[:limit]
+
+
+def _gemini_api_key(settings):
+    return (
+        _text(os.getenv("GEMINI_API_KEY"))
+        or _text(_setting(settings, "Gemini API Key", default=""))
+    )
+
+
+def _extract_json_array(text):
+    text = _text(text)
+
+    text = re.sub(
+        r"^```(?:json)?\s*|\s*```$",
+        "",
+        text,
+        flags=re.I,
+    )
+
+    try:
+        parsed = json.loads(text)
+
+        if isinstance(parsed, list):
+            return parsed
+
+        if isinstance(parsed, dict):
+            for key in ("queries", "search_queries", "results"):
+                value = parsed.get(key)
+
+                if isinstance(value, list):
+                    return value
+
+    except json.JSONDecodeError:
+        pass
+
+    match = re.search(r"\[[\s\S]*\]", text)
+
+    if match:
+        try:
+            parsed = json.loads(match.group(0))
+
+            if isinstance(parsed, list):
+                return parsed
+
+        except json.JSONDecodeError:
+            pass
+
+    return []
+
+
+def _generate_gemini_queries(
+    industry,
+    location,
+    learning_records=None,
+    api_key="",
+):
+    """
+    Use Gemini only for search-query generation.
+
+    Gemini does not decide whether an individual business qualifies.
+    """
+    learning_records = learning_records or []
+
+    positive_queries = []
+    negative_queries = []
+
+    for record in learning_records:
+        if not isinstance(record, dict):
+            continue
+
+        query = _text(record.get("Search Query", ""))
+        outcome = _normalise(record.get("Review Outcome", ""))
+        quality = _normalise(record.get("Outcome Quality", ""))
 
         if not query:
             continue
 
-        if outcome in {"approved", "approve", "accepted"}:
-            outcomes.setdefault(query, [0, 0])[0] += 1
-        elif outcome in {
-            "rejected", "rejected after call", "not a fit", "irrelevant"
-        }:
-            outcomes.setdefault(query, [0, 0])[1] += 1
+        if (
+            outcome in {"approved", "qualified", "positive"}
+            or quality in {"good", "positive", "high"}
+        ):
+            positive_queries.append(query)
 
-    original_order = {
-        query: index for index, query in enumerate(queries)
+        elif (
+            outcome in {"rejected", "negative"}
+            or quality in {"bad", "negative", "low"}
+        ):
+            negative_queries.append(query)
+
+    positive_queries = list(dict.fromkeys(positive_queries))[-12:]
+    negative_queries = list(dict.fromkeys(negative_queries))[-8:]
+
+    prompt = {
+        "task": (
+            "Generate useful public web search queries to discover real "
+            "small, independent businesses matching the supplied industry "
+            "and location. Return only a JSON array of query strings. "
+            "Do not classify businesses, infer facts, or invent businesses."
+        ),
+        "industry": industry,
+        "location": location,
+        "positive_historical_queries": positive_queries,
+        "negative_historical_queries": negative_queries,
+        "requirements": [
+            "Use the exact supplied industry and location.",
+            "Explore different natural search formulations.",
+            "Include queries that may reveal Instagram business profiles.",
+            "Do not assume the business has or lacks a website.",
+            "Avoid repeating historical queries unnecessarily.",
+            "Return no more than 8 concise queries.",
+        ],
     }
 
-    def query_rank(query):
-        approved, rejected = outcomes.get(
-            _normalise(query), [0, 0]
+    for model in GEMINI_MODELS:
+        endpoint = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent"
         )
-        # Smoothing prevents one decision from dominating the system.
-        rate = (approved + 1) / (approved + rejected + 2)
-        evidence_bonus = min(approved + rejected, 5) * 0.001
-        return rate + evidence_bonus, -original_order[query]
 
-    queries.sort(key=query_rank, reverse=True)
-    return queries
+        try:
+            response = requests.post(
+                endpoint,
+                params={"key": api_key},
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": HEADERS["User-Agent"],
+                },
+                json={
+                    "contents": [{
+                        "parts": [{
+                            "text": json.dumps(prompt, ensure_ascii=False)
+                        }]
+                    }],
+                    "generationConfig": {
+                        "temperature": 0.4,
+                        "responseMimeType": "application/json",
+                    },
+                },
+                timeout=REQUEST_TIMEOUT,
+            )
+
+            if response.status_code in {400, 404}:
+                continue
+
+            response.raise_for_status()
+
+            payload = response.json()
+
+            candidates = payload.get("candidates", [])
+
+            if not candidates:
+                continue
+
+            parts = (
+                candidates[0]
+                .get("content", {})
+                .get("parts", [])
+            )
+
+            generated_text = "\n".join(
+                _text(part.get("text", ""))
+                for part in parts
+                if isinstance(part, dict)
+            )
+
+            queries = _extract_json_array(generated_text)
+
+            cleaned = []
+
+            for item in queries:
+                if isinstance(item, dict):
+                    item = item.get("query", "")
+
+                query = _text(item)
+
+                if query and query not in cleaned:
+                    cleaned.append(query)
+
+            if cleaned:
+                return cleaned[:MAX_QUERIES_PER_INDUSTRY_LOCATION]
+
+        except (
+            requests.RequestException,
+            ValueError,
+            KeyError,
+            TypeError,
+        ) as exc:
+            logger.warning(
+                "Gemini query generation failed for %s: %s",
+                model,
+                exc,
+            )
+
+    return []
 
 
-def geocode_location(location: str) -> tuple[float, float] | None:
+def _fallback_queries(industry, location, learning_records=None):
+    """
+    Free fallback used when Gemini is not configured or unavailable.
+    No industry-specific or location-specific dictionary is required.
+
+    A broad, varied pool (not just a handful of templates) so repeated
+    discovery rounds for the same industry/location see genuinely
+    different search text instead of exhausting a tiny pool after one
+    round and silently falling back to re-searching the same queries
+    (see the "if not fresh" guard in generate_search_queries).
+    """
+    industry = _text(industry)
+    location = _text(location)
+
+    queries = [
+        f'"{industry}" "{location}" business',
+        f'"{industry}" "{location}" contact',
+        f'"{industry}" "{location}" phone number',
+        f'"{industry}" "{location}" Instagram',
+        f'site:instagram.com "{industry}" "{location}"',
+        f'"{industry}" "{location}" portfolio',
+        f'"{industry}" "{location}" owner',
+        f'independent "{industry}" "{location}"',
+        f'small "{industry}" firm "{location}"',
+        f'"{industry}" near "{location}"',
+        f'"{industry}" "{location}" WhatsApp',
+        f'"{industry}" "{location}" reviews',
+        f'"{industry}" "{location}" recently started',
+        f'"{industry}" "{location}" home based',
+        f'"{industry}" "{location}" studio',
+        f'freelance "{industry}" "{location}"',
+        f'"{industry}" "{location}" new business',
+        f'"{industry}" "{location}" booking',
+        f'"{industry}" "{location}" address',
+        f'best "{industry}" "{location}"',
+        f'affordable "{industry}" "{location}"',
+        f'experienced "{industry}" "{location}"',
+        f'"{industry}" "{location}" testimonials',
+        f'"{industry}" "{location}" price',
+    ]
+
+    for record in learning_records or []:
+        if not isinstance(record, dict):
+            continue
+
+        if (
+            _normalise(record.get("Industry", "")) == _normalise(industry)
+            and _normalise(record.get("Location", "")) == _normalise(location)
+        ):
+            historical_query = _text(record.get("Search Query", ""))
+
+            if historical_query:
+                queries.append(historical_query)
+
+    unique = []
+    seen = set()
+
+    for query in queries:
+        key = _normalise(query)
+
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(query)
+
+    return unique[:MAX_QUERIES_PER_INDUSTRY_LOCATION]
+
+
+def generate_search_queries(
+    industry,
+    location,
+    settings=None,
+    learning_records=None,
+    used_queries=None,
+):
+    settings = settings or {}
+    learning_records = learning_records or []
+    used_queries = used_queries or set()
+
+    api_key = _gemini_api_key(settings)
+
+    queries = []
+
+    if api_key:
+        queries = _generate_gemini_queries(
+            industry=industry,
+            location=location,
+            learning_records=learning_records,
+            api_key=api_key,
+        )
+
+    if not queries:
+        queries = _fallback_queries(
+            industry=industry,
+            location=location,
+            learning_records=learning_records,
+        )
+
+    used_normalised = {
+        _normalise(query)
+        for query in used_queries
+    }
+
+    fresh = [
+        query
+        for query in queries
+        if _normalise(query) not in used_normalised
+    ]
+
+    # If historical queries exhaust the set, reuse them rather than
+    # stopping discovery completely.
+    if not fresh:
+        fresh = queries
+
+    return fresh[:MAX_QUERIES_PER_INDUSTRY_LOCATION]
+
+
+def _parse_instagram_handle(url):
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return ""
+
+    hostname = (parsed.hostname or "").lower()
+
+    if hostname not in {"instagram.com", "www.instagram.com"}:
+        return ""
+
+    parts = [
+        part for part in parsed.path.strip("/").split("/")
+        if part
+    ]
+
+    if not parts:
+        return ""
+
+    reserved = {
+        "p",
+        "reel",
+        "reels",
+        "stories",
+        "explore",
+        "accounts",
+        "direct",
+        "about",
+        "developer",
+    }
+
+    if parts[0].lower() in reserved:
+        return ""
+
+    handle = parts[0].lstrip("@")
+
+    if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", handle):
+        return ""
+
+    return handle
+
+
+def _find_urls(text):
+    if not text:
+        return []
+
+    matches = re.findall(
+        r"https?://[^\s<>'\"),]+|"
+        r"(?<![@\w])(?:www\.)?[A-Za-z0-9-]+"
+        r"(?:\.[A-Za-z0-9-]+)+"
+        r"(?:/[^\s<>'\"),]*)?",
+        text,
+        flags=re.I,
+    )
+
+    results = []
+
+    for match in matches:
+        url = _canonical_url(match)
+
+        if url and url not in results:
+            results.append(url)
+
+    return results
+
+
+def _website_evidence_from_text(text, source_url=""):
+    """
+    Return website evidence only when an official-looking domain
+    is explicitly present in accessible text or a link.
+
+    A missing domain is not proof that no website exists.
+    """
+    urls = _find_urls(text)
+
+    if source_url:
+        urls.insert(0, _canonical_url(source_url))
+
+    seen = set()
+
+    for url in urls:
+        if not url:
+            continue
+
+        key = _normalise(url)
+
+        if key in seen:
+            continue
+
+        seen.add(key)
+
+        if _is_official_website_url(url):
+            return {
+                "status": "HAS WEBSITE",
+                "website": url,
+                "evidence_url": source_url or url,
+                "evidence": (
+                    "An official-looking website URL was found "
+                    "in publicly accessible evidence."
+                ),
+            }
+
+    return {
+        "status": "UNKNOWN",
+        "website": "",
+        "evidence_url": source_url,
+        "evidence": (
+            "No official website URL was confirmed in the evidence "
+            "checked. This does not prove the business has no website."
+        ),
+    }
+
+
+def _fetch_page(url):
+    """
+    Fetch a publicly accessible page when allowed by the website.
+    This does not bypass login, access controls, or anti-bot protections.
+    """
+    if not url:
+        return ""
+
+    response = _get(url)
+
+    if response is None:
+        return ""
+
+    content_type = response.headers.get("Content-Type", "").lower()
+
+    if content_type and "html" not in content_type:
+        return ""
+
+    return response.text[:1_000_000]
+
+
+def _extract_html_links(html, base_url=""):
+    if not html:
+        return []
+
+    links = re.findall(
+        r"""href\s*=\s*["']([^"'#]+)["']""",
+        html,
+        flags=re.I,
+    )
+
+    output = []
+
+    for link in links:
+        link = _text(link)
+
+        if link.startswith("//"):
+            link = "https:" + link
+
+        elif link.startswith("/"):
+            if base_url:
+                parsed = urlparse(base_url)
+                link = f"{parsed.scheme}://{parsed.netloc}{link}"
+            else:
+                continue
+
+        elif not re.match(r"^https?://", link, re.I):
+            continue
+
+        canonical = _canonical_url(link)
+
+        if canonical and canonical not in output:
+            output.append(canonical)
+
+    return output
+
+
+def _instagram_profile_evidence(url):
+    """
+    Inspect publicly accessible Instagram profile HTML where available.
+    If Instagram blocks access, the result remains UNKNOWN.
+    """
+    handle = _parse_instagram_handle(url)
+
+    if not handle:
+        return {
+            "handle": "",
+            "website": "",
+            "website_status": "UNKNOWN",
+            "phone": "",
+            "evidence": "",
+        }
+
+    html = _fetch_page(f"https://www.instagram.com/{handle}/")
+
+    if not html:
+        return {
+            "handle": handle,
+            "website": "",
+            "website_status": "UNKNOWN",
+            "phone": "",
+            "evidence": (
+                "Instagram profile could not be inspected publicly."
+            ),
+        }
+
+    # Instagram page metadata can include the profile's outbound website.
+    metadata_values = re.findall(
+        r"""(?:content|href)\s*=\s*["']([^"']+)["']""",
+        html,
+        flags=re.I,
+    )
+
+    combined = " ".join(metadata_values)
+    urls = _find_urls(combined)
+
+    website = ""
+
+    for candidate in urls:
+        if _is_official_website_url(candidate):
+            website = candidate
+            break
+
+    phones = _extract_phones(
+        re.sub(r"<[^>]+>", " ", html)
+    )
+
+    return {
+        "handle": handle,
+        "website": website,
+        "website_status": "HAS WEBSITE" if website else "UNKNOWN",
+        "phone": phones[0] if phones else "",
+        "evidence": (
+            "An outbound website link was found on the public profile."
+            if website
+            else
+            "No outbound official website link was confirmed on the "
+            "accessible Instagram profile. Website existence remains "
+            "unknown."
+        ),
+    }
+
+
+def _industry_osm_filters(industry):
+    text = _normalise(industry)
+
+    for keywords, filters in INDUSTRY_OSM_KEYWORDS:
+        if any(keyword in text for keyword in keywords):
+            return filters
+
+    return []
+
+
+def geocode_location(location):
+    """Geocode a location to (lat, lon) via Nominatim, India-restricted."""
     if not _text(location):
         return None
 
@@ -374,7 +1048,7 @@ def geocode_location(location: str) -> tuple[float, float] | None:
                 "limit": 1,
                 "countrycodes": "in",
             },
-            headers=HEADERS,
+            headers=OSM_HEADERS,
             timeout=REQUEST_TIMEOUT,
         )
         response.raise_for_status()
@@ -385,23 +1059,13 @@ def geocode_location(location: str) -> tuple[float, float] | None:
 
         return float(data[0]["lat"]), float(data[0]["lon"])
 
-    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
-        print(f"[Discovery] Geocoding failed for {location}: {exc}")
+    except (requests.RequestException, ValueError, KeyError, TypeError, IndexError) as exc:
+        logger.warning("Geocoding failed for %s: %s", location, exc)
         return None
 
 
-def query_overpass(query: str) -> dict:
-    response = requests.post(
-        OVERPASS_URL,
-        data={"data": query},
-        headers=HEADERS,
-        timeout=60,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def query_overpass_fallback(query: str) -> dict:
+def query_overpass(query):
+    """Query Overpass, falling back across mirrors on failure."""
     last_error = None
 
     for endpoint in [OVERPASS_URL, *OVERPASS_FALLBACK_URLS]:
@@ -409,11 +1073,12 @@ def query_overpass_fallback(query: str) -> dict:
             response = requests.post(
                 endpoint,
                 data={"data": query},
-                headers=HEADERS,
+                headers=OSM_HEADERS,
                 timeout=60,
             )
             response.raise_for_status()
             return response.json()
+
         except requests.RequestException as exc:
             last_error = exc
             time.sleep(0.5)
@@ -421,7 +1086,7 @@ def query_overpass_fallback(query: str) -> dict:
     raise RuntimeError(f"All Overpass endpoints failed: {last_error}")
 
 
-def _get_tag(tags: dict, *keys: str) -> str:
+def _osm_tag(tags, *keys):
     for key in keys:
         value = _text(tags.get(key))
         if value:
@@ -429,130 +1094,86 @@ def _get_tag(tags: dict, *keys: str) -> str:
     return ""
 
 
-def _industry_overpass_filters(industry: str) -> str:
-    filters = INDUSTRY_OSM_FILTERS.get(canonical_industry(industry), [])
-    return "\n".join(filters)
-
-
-def _industry_evidence(tags: dict, industry: str) -> tuple[bool, str]:
-    canonical = canonical_industry(industry)
-    terms = INDUSTRY_SEARCH_TERMS.get(canonical, [])
-    values = " ".join(
-        _text(value).lower()
-        for key, value in tags.items()
-        if key not in {"name", "brand", "operator", "addr:street"}
-    )
-
-    if not terms:
-        return False, "No configured industry vocabulary"
-
-    matched = [
-        term for term in terms
-        if term.lower() in values
-    ]
-
-    if matched:
-        return True, "Matched OSM tags: " + ", ".join(matched[:3])
-
-    # OSM category matching is not sufficient to prove a business is a fit.
-    return False, "Industry needs manual verification"
-
-
-def extract_business(
-    element: dict,
-    industry: str,
-    location: str,
-) -> dict | None:
+def extract_osm_business(element, industry, location):
     tags = element.get("tags", {}) or {}
-    name = _get_tag(tags, "name", "brand", "operator")
+    name = _osm_tag(tags, "name", "brand", "operator")
 
     if not name or len(name) < 2:
         return None
 
-    phone = _phone(_get_tag(tags, "contact:phone", "phone", "mobile"))
-    instagram = _get_tag(
-        tags, "contact:instagram", "instagram"
-    ).lstrip("@")
-    website = _get_tag(tags, "contact:website", "website", "url")
-    email = _get_tag(tags, "contact:email", "email")
+    phone = _phone(_osm_tag(tags, "contact:phone", "phone", "mobile"))
+    instagram = _osm_tag(tags, "contact:instagram", "instagram").lstrip("@")
+    website_raw = _osm_tag(tags, "contact:website", "website", "url")
+    website = _canonical_url(website_raw) if website_raw else ""
+    has_real_website = bool(website) and _is_official_website_url(website)
 
     osm_type = _text(element.get("type"))
     osm_id = _text(element.get("id"))
-    osm_tags = {
-        str(key): str(value)
-        for key, value in tags.items()
-    }
-
-    verified, evidence = _industry_evidence(tags, industry)
-
-    business_type = _get_tag(
-        tags, "shop", "office", "craft", "amenity",
-        "healthcare", "tourism", "leisure"
-    )
-
-    lat = element.get("lat")
-    lon = element.get("lon")
-
-    if not lat or not lon:
-        center = element.get("center", {}) or {}
-        lat = center.get("lat", "")
-        lon = center.get("lon", "")
 
     address_parts = [
-        _get_tag(tags, "addr:housenumber"),
-        _get_tag(tags, "addr:street"),
-        _get_tag(tags, "addr:suburb"),
-        _get_tag(tags, "addr:city"),
+        _osm_tag(tags, "addr:housenumber"),
+        _osm_tag(tags, "addr:street"),
+        _osm_tag(tags, "addr:suburb"),
+        _osm_tag(tags, "addr:city"),
     ]
-    address = ", ".join(part for part in address_parts if part)
+    address = ", ".join(part for part in address_parts if part) or _text(location)
 
     return {
+        "Lead ID": _stable_id(name, location, osm_type, osm_id),
         "Business Name": name,
-        "Industry": canonical_industry(industry),
-        "Location": location,
+        "Industry": industry,
+        "Business Type": industry,
+        "Location": _text(location),
+        "Address": address,
         "Phone": phone,
         "Instagram ID": instagram,
-        "Website": website,
-        "Email": email,
-        "Address": address or location,
         "Lead Source": "OpenStreetMap",
-        "Search Query": "",
-        "Business Type": business_type,
-        "Opportunity": "",
-        "Buying Signal": "",
-        "Evidence": evidence,
         "Source URL": (
             f"https://www.openstreetmap.org/{osm_type}/{osm_id}"
             if osm_type and osm_id else ""
         ),
-        "OSM Type": osm_type,
-        "OSM ID": osm_id,
-        "OSM Tags": osm_tags,
-        "Industry Verified": verified,
-        "Needs Manual Review": not verified,
-        "Latitude": lat or "",
-        "Longitude": lon or "",
+        "Search Query": "",
+        "Search Result Date": "",
+        # Tag absence does not prove no website exists -- stays UNKNOWN
+        # (manual review required) rather than being treated as NO WEBSITE.
+        "Website": website if has_real_website else "",
+        "Website Status": "HAS WEBSITE" if has_real_website else "UNKNOWN",
+        "Website Evidence": (
+            "An official-looking website URL was found in OpenStreetMap "
+            "contact tags."
+            if has_real_website else
+            "No website tag found on OpenStreetMap. This does not prove "
+            "the business has no website."
+        ),
+        "Website Evidence URL": website,
+        "Buying Signal": "",
+        "Buying Signal Evidence": "",
+        "Buying Signal URL": "",
+        "Buying Signal Date": "",
+        # OSM tag filters are matched to the requested industry, so this
+        # is genuine evidence, unlike a generic web search result.
+        "Industry Verified": True,
+        "Industry Match": True,
+        "Needs Manual Review": True,
+        "Discovery Evidence": f"OpenStreetMap tags: {dict(tags)}"[:2000],
     }
 
 
-def discover_osm_businesses(
-    industry: str,
-    location: str,
-    radius_m: int = 20000,
-) -> list[dict]:
+def discover_osm_businesses(industry, location, radius_m=20000):
     coordinates = geocode_location(location)
 
     if not coordinates:
-        print(f"[Discovery] Could not geocode location: {location}")
+        logger.warning("Could not geocode location for OSM: %s", location)
         return []
 
     lat, lon = coordinates
     radius_m = max(1000, min(int(radius_m), 50000))
-    filters = INDUSTRY_OSM_FILTERS.get(
-        canonical_industry(industry), []
-    )
+    filters = _industry_osm_filters(industry)
 
     if not filters:
+        logger.info(
+            "No OSM tag filters configured for industry: %s", industry
+        )
         return []
 
     selector_blocks = []
@@ -571,546 +1192,286 @@ def discover_osm_businesses(
     )
 
     try:
-        data = query_overpass_fallback(query)
+        data = query_overpass(query)
     except Exception as exc:
-        print(
-            f"[Discovery] Overpass query failed for "
-            f"{industry} in {location}: {exc}"
+        logger.warning(
+            "OSM query failed for %s in %s: %s", industry, location, exc
         )
         return []
 
     output = []
 
     for element in data.get("elements", []):
-        candidate = extract_business(element, industry, location)
-        if candidate:
-            output.append(candidate)
+        business = extract_osm_business(element, industry, location)
+
+        if business:
+            output.append(business)
 
     return output
 
 
-def _domain(url: str) -> str:
-    try:
-        host = (urlparse(url).hostname or "").lower()
-        return host.removeprefix("www.")
-    except ValueError:
-        return ""
+def _candidate_from_result(result, industry, location):
+    title = _text(result.get("title", ""))
+    url = _canonical_url(result.get("url", ""))
+    snippet = _text(result.get("snippet", ""))
+    source_query = _text(result.get("query", ""))
+    published_date = _text(result.get("date", ""))
 
-
-def _search_web(query: str, limit: int = 8) -> list[dict]:
-    try:
-        response = requests.get(
-            BING_RSS_URL,
-            params={"q": query, "format": "rss"},
-            headers=HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
-        response.raise_for_status()
-        root = ET.fromstring(response.text)
-
-    except (requests.RequestException, ET.ParseError) as exc:
-        print(f"[Discovery] Web search failed for {query}: {exc}")
-        return []
-
-    results = []
-
-    for item in root.findall(".//item")[:max(1, min(limit, 10))]:
-        title = _text(item.findtext("title"))
-        url = _text(item.findtext("link"))
-        description = _text(item.findtext("description"))
-
-        if not title or not url:
-            continue
-
-        results.append({
-            "title": title,
-            "url": url,
-            "description": description,
-            "query": query,
-        })
-
-    return results
-
-
-def _is_directory_or_generic(title: str, url: str) -> bool:
-    domain = _domain(url)
-    title_lower = _normalise(title)
-
-    if not domain:
-        return True
-
-    if any(
-        domain == blocked or domain.endswith("." + blocked)
-        for blocked in NON_BUSINESS_DOMAINS
-    ):
-        return True
-
-    if any(term in title_lower for term in GENERIC_TITLE_TERMS):
-        return True
-
-    return False
-
-
-def _business_name_from_title(title: str) -> str:
-    name = re.split(
-        r"\s(?:\||–|—|-)\s|:\s",
-        _text(title),
-        maxsplit=1,
-    )[0]
-    return name.strip(" -|–—:·")
-
-
-def _fetch_page_contacts(url: str) -> dict:
-    data = {
-        "Phone": "",
-        "Instagram ID": "",
-        "Email": "",
-        "Website": url,
-    }
-
-    try:
-        response = requests.get(
-            url,
-            headers=HEADERS,
-            timeout=REQUEST_TIMEOUT,
-            allow_redirects=True,
-        )
-
-        if response.status_code >= 400:
-            return data
-
-        page = response.text[:1_000_000]
-
-    except requests.RequestException:
-        return data
-
-    emails = re.findall(
-        r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
-        page,
-        flags=re.I,
-    )
-
-    if emails:
-        data["Email"] = emails[0].strip()
-
-    phones = re.findall(
-        r"(?:tel:|telephone[\"']?\s*[:=]\s*[\"']?)"
-        r"(\+?[\d][\d\s().-]{6,}\d)",
-        page,
-        flags=re.I,
-    )
-
-    for phone in phones:
-        if _phone(phone):
-            data["Phone"] = _phone(phone)
-            break
-
-    handles = re.findall(
-        r"https?://(?:www\.)?instagram\.com/"
-        r"([A-Za-z0-9._]+)/?",
-        page,
-        flags=re.I,
-    )
-
-    if handles and handles[0].lower() not in {
-        "p", "reel", "reels", "stories", "explore"
-    }:
-        data["Instagram ID"] = handles[0].strip(".")
-
-    return data
-
-
-def _web_result_to_candidate(
-    result: dict,
-    industry: str,
-    location: str,
-    enrich: bool = True,
-) -> dict | None:
-    title = _text(result.get("title"))
-    url = _text(result.get("url"))
-    description = _text(result.get("description"))
-
-    if _is_directory_or_generic(title, url):
+    if not title or not url:
         return None
 
-    name = _business_name_from_title(title)
-
-    if len(name) < 3 or len(name) > 100:
+    if _normalise(title) in GENERIC_NAMES:
         return None
 
-    if any(
-        term in name.lower()
-        for term in (
-            "search results", "official website", "contact us",
-            "business directory", "company profile", "services in",
-        )
-    ):
+    if _is_directory_url(url):
         return None
 
-    if not _domain(url) or "." not in _domain(url):
+    text = f"{title} {snippet}"
+
+    instagram_handle = _parse_instagram_handle(url)
+
+    instagram_id = ""
+    website = ""
+    website_status = "UNKNOWN"
+    website_evidence = ""
+    website_evidence_url = ""
+    phone = ""
+    business_name = title
+
+    if instagram_handle:
+        instagram_id = instagram_handle
+
+        profile = _instagram_profile_evidence(url)
+
+        if profile.get("website"):
+            website = profile["website"]
+            website_status = "HAS WEBSITE"
+            website_evidence = profile.get("evidence", "")
+            website_evidence_url = url
+
+        if profile.get("phone"):
+            phone = profile["phone"]
+
+        # Instagram search snippets may contain a display name, bio,
+        # contact details, and other publicly indexed information.
+        if " | Instagram" in business_name:
+            business_name = business_name.split(" | Instagram", 1)[0]
+
+        if " - Instagram" in business_name:
+            business_name = business_name.split(" - Instagram", 1)[0]
+
+    else:
+        evidence = _website_evidence_from_text(text, url)
+
+        if evidence["status"] == "HAS WEBSITE":
+            website = evidence["website"]
+            website_status = "HAS WEBSITE"
+            website_evidence = evidence["evidence"]
+            website_evidence_url = evidence["evidence_url"]
+
+    if not phone:
+        phones = _extract_phones(text)
+
+        if phones:
+            phone = phones[0]
+
+    if not business_name or _normalise(business_name) in GENERIC_NAMES:
         return None
 
-    contact = (
-        _fetch_page_contacts(url)
-        if enrich
-        else {
-            "Phone": "",
-            "Instagram ID": "",
-            "Email": "",
-            "Website": url,
-        }
-    )
-
-    evidence = (
-        f"Search title: {title}. Description: {description}. "
-        f"URL: {url}. Query: {result.get('query', '')}"
-    )[:2000]
-
+    # Avoid treating search-result source URLs as proof of no website.
     return {
-        "Business Name": name,
-        "Industry": canonical_industry(industry),
-        "Location": _text(location),
-        "Phone": contact["Phone"],
-        "Instagram ID": contact["Instagram ID"],
-        "Website": contact["Website"],
-        "Email": contact["Email"],
-        "Address": _text(location),
-        "Lead Source": "Public web search",
-        "Search Query": _text(result.get("query", "")),
-        "Business Type": "",
-        "Opportunity": "",
-        "Buying Signal": "",
-        "Evidence": evidence,
+        "Lead ID": _stable_id(business_name, location, url),
+        "Business Name": business_name,
+        "Industry": industry,
+        "Business Type": industry,
+        "Location": location,
+        "Phone": phone,
+        "Instagram ID": instagram_id,
+        "Lead Source": (
+            "Public Instagram profile search"
+            if instagram_id
+            else "Public web search"
+        ),
         "Source URL": url,
-        "OSM Type": "",
-        "OSM ID": "",
-        "OSM Tags": {},
+        "Search Query": source_query,
+        "Search Result Date": published_date,
+        "Website": website,
+        "Website Status": website_status,
+        "Website Evidence": website_evidence,
+        "Website Evidence URL": website_evidence_url,
+        "Buying Signal": "",
+        "Buying Signal Evidence": "",
+        "Buying Signal URL": "",
+        "Buying Signal Date": "",
         "Industry Verified": False,
+        "Industry Match": False,
         "Needs Manual Review": True,
+        "Discovery Evidence": snippet,
     }
 
 
-def discover_buying_signals(
-    industry: str,
-    locations: list[str],
-    settings: dict | None = None,
-) -> list[dict]:
-    """Return research-only signal snippets, not verified business leads."""
-    settings = settings or {}
-    canonical = canonical_industry(industry)
-
-    days = _setting(
-        settings, "Buying Signal Window",
-        "Buying Signal Recency", "Signal Window Days", default=14
-    )
-
-    try:
-        days = max(1, min(int(days), 365))
-    except (TypeError, ValueError):
-        days = 14
-
-    max_queries = _setting(
-        settings, "Max Buying Signal Queries", default=6
-    )
-
-    try:
-        max_queries = max(1, min(int(max_queries), 20))
-    except (TypeError, ValueError):
-        max_queries = 6
-
-    signals = [
-        '"need a website"', '"website redesign"',
-        '"website developer"', '"digital marketing"',
-        '"social media management"',
-    ]
-
-    terms = INDUSTRY_SEARCH_TERMS.get(canonical, [canonical])
-    queries = []
-
-    for location in _as_list(locations):
-        for term in terms[:3]:
-            for signal in signals:
-                queries.append(
-                    f'{signal} "{term}" "{location}" India'
-                )
-                if len(queries) >= max_queries:
-                    break
-            if len(queries) >= max_queries:
-                break
-        if len(queries) >= max_queries:
-            break
-
+def _dedupe_candidates(candidates):
     output = []
-
-    for query in queries:
-        for result in _search_web(query, limit=8):
-            evidence = (
-                f"{result['title']} {result['description']}"
-            ).strip()
-
-            if not any(
-                term in evidence.lower()
-                for term in BUYING_SIGNAL_TERMS
-            ):
-                continue
-
-            output.append({
-                "Business Name": "",
-                "Search Result Title": result["title"],
-                "Industry": canonical,
-                "Location": "",
-                "Phone": "",
-                "Instagram ID": "",
-                "Website": "",
-                "Email": "",
-                "Address": "",
-                "Lead Source": "Public web search",
-                "Opportunity": (
-                    "Potential buying signal; verify the business manually"
-                ),
-                "Buying Signal": evidence[:1500],
-                "Evidence": (
-                    f"{result['url']}\n{evidence}"
-                )[:2000],
-                "Source URL": result["url"],
-                "Signal Window Days": days,
-                "Needs Review": True,
-                "Needs Manual Review": True,
-                "Industry Verified": False,
-                "OSM Type": "",
-                "OSM ID": "",
-                "OSM Tags": {},
-            })
-
-        time.sleep(0.25)
-
-    return output
-
-
-def _candidate_key(candidate: dict) -> str:
-    phone = re.sub(r"\D", "", _text(candidate.get("Phone")))
-    instagram = _normalise(
-        candidate.get("Instagram ID")
-    ).lstrip("@")
-    name = _normalise(candidate.get("Business Name"))
-    location = _normalise(candidate.get("Location"))
-    website = _normalise(candidate.get("Website")).rstrip("/")
-
-    if len(phone) >= 7:
-        return f"phone:{phone}"
-    if instagram:
-        return f"instagram:{instagram}"
-    if website:
-        return f"website:{website}"
-
-    return f"name:{name}|location:{location}"
-
-
-def _merge_candidates(candidates: list[dict]) -> list[dict]:
-    merged = {}
+    seen = set()
 
     for candidate in candidates:
-        if (
-            not isinstance(candidate, dict)
-            or not _text(candidate.get("Business Name"))
-        ):
+        if not candidate:
             continue
 
-        key = _candidate_key(candidate)
+        phone = _phone(candidate.get("Phone", ""))
+        instagram = _normalise(candidate.get("Instagram ID", ""))
+        source_url = _normalise(candidate.get("Source URL", ""))
 
-        if key not in merged:
-            merged[key] = dict(candidate)
-            source = _text(candidate.get("Lead Source"))
-            merged[key]["Discovery Sources"] = (
-                [source] if source else []
-            )
+        name = _normalise(candidate.get("Business Name", ""))
+        location = _normalise(candidate.get("Location", ""))
+
+        keys = []
+
+        if phone:
+            keys.append(("phone", phone))
+
+        if instagram:
+            keys.append(("instagram", instagram))
+
+        if source_url:
+            keys.append(("url", source_url))
+
+        if name:
+            keys.append(("name_location", name, location))
+
+        if any(key in seen for key in keys):
             continue
 
-        existing = merged[key]
+        for key in keys:
+            seen.add(key)
 
-        for field in (
-            "Phone", "Instagram ID", "Industry", "Location",
-            "Website", "Email", "Address", "OSM ID", "OSM Type",
-            "OSM Tags", "Source URL", "Search Query", "Business Type",
-        ):
-            if not existing.get(field) and candidate.get(field):
-                existing[field] = candidate[field]
+        output.append(candidate)
 
-        for field in ("Opportunity", "Buying Signal", "Evidence"):
-            new_value = _text(candidate.get(field))
-            old_value = _text(existing.get(field))
-
-            if new_value and new_value not in old_value:
-                existing[field] = (
-                    f"{old_value} | {new_value}"
-                    if old_value else new_value
-                )
-
-        source = _text(candidate.get("Lead Source"))
-
-        if source and source not in existing["Discovery Sources"]:
-            existing["Discovery Sources"].append(source)
-
-        existing["Lead Source"] = ", ".join(
-            existing["Discovery Sources"]
-        )
-
-        existing["Needs Manual Review"] = (
-            bool(existing.get("Needs Manual Review"))
-            or bool(candidate.get("Needs Manual Review"))
-        )
-
-        existing["Industry Verified"] = (
-            bool(existing.get("Industry Verified"))
-            or bool(candidate.get("Industry Verified"))
-        )
-
-    return list(merged.values())
+    return output
 
 
 def discover_businesses(
-    industry: str,
-    locations: list[str] | str,
-    settings: dict | None = None,
-    learning_records: list[dict] | None = None,
-) -> list[dict]:
-    """Combine structured OSM results with ranked web searches."""
+    industry,
+    locations,
+    settings=None,
+    used_queries=None,
+    learning_records=None,
+    include_osm=False,
+):
+    """
+    Discover candidate businesses from OpenStreetMap, public web search,
+    and Instagram search.
+
+    This function does not write to Google Sheets.
+    It does not qualify businesses.
+
+    include_osm: OSM results come from fixed tag filters for the
+    industry, not search text, so they do not change between repeated
+    calls for the same industry/location. The caller (session_runner)
+    sets this True only on the first discovery round of a session and
+    False on later rounds, to avoid redundant Overpass calls.
+    """
     settings = settings or {}
-    canonical = canonical_industry(industry)
-    location_list = _as_list(locations)
+    used_queries = used_queries or set()
+    learning_records = learning_records or []
+
     candidates = []
 
-    try:
-        radius = max(
-            1000,
-            min(
-                int(
-                    _setting(
-                        settings, "Discovery Radius",
-                        "Search Radius Metres", "Radius Metres",
-                        default=20000,
-                    )
-                ),
-                50000,
-            ),
-        )
-    except (TypeError, ValueError):
-        radius = 20000
+    if include_osm:
+        for location in locations:
+            try:
+                candidates.extend(
+                    discover_osm_businesses(industry, location)
+                )
+            except Exception as exc:
+                logger.warning(
+                    "OSM discovery error for %s in %s: %s",
+                    industry, location, exc,
+                )
 
-    for location in location_list:
-        try:
-            candidates.extend(
-                discover_osm_businesses(canonical, location, radius)
-            )
-        except Exception as exc:
-            print(
-                f"[Discovery] OSM error for "
-                f"{canonical} in {location}: {exc}"
-            )
-
-    query_limit = _setting(
-        settings, "Max Search Queries", "Search Query Limit",
-        "Queries Per Industry Location", default=8
-    )
-
-    try:
-        query_limit = max(1, min(int(query_limit), 30))
-    except (TypeError, ValueError):
-        query_limit = 8
-
-    results_limit = _setting(
-        settings, "Results Per Search Query", default=8
-    )
-
-    try:
-        results_limit = max(1, min(int(results_limit), 10))
-    except (TypeError, ValueError):
-        results_limit = 8
-
-    enrich = _setting(
-        settings, "Enrich Web Results", default=True
-    )
-
-    if isinstance(enrich, str):
-        enrich = enrich.strip().lower() not in {
-            "false", "no", "0", "off"
-        }
-
-    for location in location_list:
+    for location in locations:
         queries = generate_search_queries(
-            canonical,
-            location,
-            settings,
-            max_queries=query_limit,
+            industry=industry,
+            location=location,
+            settings=settings,
             learning_records=learning_records,
+            used_queries=used_queries,
         )
-
-        print(
-            f"[Discovery] Planned {len(queries)} dynamic web queries "
-            f"for {canonical} in {location}"
-        )
-
-        seen_urls = set()
 
         for query in queries:
-            for result in _search_web(query, limit=results_limit):
-                url_key = _normalise(
-                    result.get("url")
-                ).rstrip("/")
+            logger.info(
+                "Searching industry=%s location=%s query=%s",
+                industry,
+                location,
+                query,
+            )
 
-                if not url_key or url_key in seen_urls:
-                    continue
+            try:
+                results = _bing_search(query)
+            except Exception as exc:
+                logger.warning("Search failed for %s: %s", query, exc)
+                results = []
 
-                seen_urls.add(url_key)
-
-                candidate = _web_result_to_candidate(
-                    result,
-                    canonical,
-                    location,
-                    enrich=bool(enrich),
+            for result in results:
+                candidate = _candidate_from_result(
+                    result=result,
+                    industry=industry,
+                    location=location,
                 )
 
                 if candidate:
                     candidates.append(candidate)
 
-            time.sleep(0.25)
+            # Keep requests at a moderate pace.
+            time.sleep(0.4)
 
-    merged = _merge_candidates(candidates)
-
-    print(
-        f"[Discovery] Total unique named candidates for {canonical}: "
-        f"{len(merged)} (OSM + web; manual verification required)"
-    )
-
-    return merged
+    return _dedupe_candidates(candidates)
 
 
 def discover_from_settings(
-    settings: dict,
-    learning_records: list[dict] | None = None,
-) -> list[dict]:
+    settings,
+    learning_records=None,
+    used_queries=None,
+    include_osm=False,
+):
+    """
+    Entry point expected by session_runner.py.
+
+    Industries and locations are always read from Settings.
+    OSM is intentionally not used as the primary discovery source.
+    """
+    settings = settings or {}
+    learning_records = learning_records or []
+    used_queries = used_queries or set()
+
     industries = _industries_from_settings(settings)
     locations = _locations_from_settings(settings)
 
-    if not industries or not locations:
-        print(
-            "[Discovery] Settings must include industries and locations."
+    if not industries:
+        logger.warning(
+            "No industries configured in Settings. Discovery skipped."
         )
         return []
 
-    candidates = []
+    if not locations:
+        logger.warning(
+            "No locations configured in Settings. Discovery skipped."
+        )
+        return []
+
+    all_candidates = []
 
     for industry in industries:
-        try:
-            candidates.extend(
-                discover_businesses(
-                    industry,
-                    locations,
-                    settings,
-                    learning_records=learning_records,
-                )
+        for location in locations:
+            candidates = discover_businesses(
+                industry=industry,
+                locations=[location],
+                settings=settings,
+                used_queries=used_queries,
+                learning_records=learning_records,
+                include_osm=include_osm,
             )
-        except Exception as exc:
-            print(f"[Discovery] Failed for {industry}: {exc}")
 
-    return _merge_candidates(candidates)
+            all_candidates.extend(candidates)
+
+    return _dedupe_candidates(all_candidates)

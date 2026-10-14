@@ -28,4 +28,16 @@ const CONFIG = {
 
   // How often the site re-reads the sheet, in milliseconds.
   POLL_INTERVAL_MS: 30000,
+
+  // Apps Script Web App URL for the "Send notifications now" button
+  // (see notify_on_approve.gs's doGet / sendPendingNotifications).
+  // Leave both blank to hide the button entirely.
+  // Get the URL from Apps Script: Deploy -> New deployment -> Web app.
+  NOTIFY_WEBHOOK_URL: "https://script.google.com/macros/s/AKfycbxq1ijKKF_kuN1By39U6Ay5JY9iv6zc5FE6wSAnCTz5ggmCBPKIwHwlPEbCvpyVXlG2DA/exec",
+
+  // Must match the WEB_APP_SECRET Script Property you set in
+  // notify_on_approve.gs. This is not a Slack/Telegram/GitHub
+  // credential — just a shared password between this site and that
+  // one Apps Script endpoint, so a stranger can't call it.
+  NOTIFY_WEBHOOK_SECRET: "balawala@praharsh",
 };
