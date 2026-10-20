@@ -273,7 +273,7 @@ function openActionModal(opts) {
   }
 }
 
-// One click listener for every Blacklist / Delete button.
+// One click listener for every Edit / Blacklist / Delete button.
 document.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-lead-action]");
 
@@ -305,7 +305,12 @@ document.addEventListener("click", (e) => {
     "data-lead-action"
   );
 
-  if (action === "delete") {
+  if (action === "edit") {
+    // Opens the same "Add lead manually" modal from leads.js,
+    // prefilled with this row's current values -- see
+    // openLeadModal(existingLead) / saveEditedLead() there.
+    openLeadModal(lead);
+  } else if (action === "delete") {
     openActionModal({
       title: "Delete this lead?",
       message:

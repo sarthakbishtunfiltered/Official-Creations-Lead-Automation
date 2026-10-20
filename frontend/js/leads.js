@@ -43,7 +43,7 @@ Auth.requireSession(() => {
   `;
 
   if (isEditor) {
-    document.getElementById("addLeadBtn").addEventListener("click", openLeadModal);
+    document.getElementById("addLeadBtn").addEventListener("click", () => openLeadModal());
 
     document.getElementById("cleanupBtn").addEventListener("click", async () => {
       const btn = document.getElementById("cleanupBtn");
@@ -151,6 +151,7 @@ function renderTable() {
         <td class="${priorityClass(r["Priority"])}">${escapeHtml(r["Priority"])}</td>
                 <td>${escapeHtml(r["Status"])}</td>
         ${isEditor ? `<td style="white-space:nowrap;">
+          <button class="btn-quiet" data-lead-action="edit" data-row="${r.__rowIndex}" style="padding:4px 8px;">Edit</button>
           <button class="btn-quiet" data-lead-action="blacklist" data-row="${r.__rowIndex}" style="padding:4px 8px;">Blacklist</button>
           <button class="btn-quiet" data-lead-action="delete" data-row="${r.__rowIndex}" style="padding:4px 8px;color:var(--warn);">Delete</button>
         </td>` : ""}
@@ -201,8 +202,13 @@ function onModalKey(e) {
   if (e.key === "Escape") closeLeadModal();
 }
 
-function openLeadModal() {
+// Pass an existing lead row (from allLeadRows) to open this same form
+// in edit mode, prefilled with its current values. Leave empty/undefined
+// for the normal "Add lead manually" flow.
+function openLeadModal(existingLead) {
   closeLeadModal();
+
+  const isEdit = Boolean(existingLead);
 
   const fieldsHtml = LEAD_FORM_FIELDS.map(
     (f) => `
@@ -220,15 +226,17 @@ function openLeadModal() {
 
   overlay.innerHTML = `
     <div style="background:#fff;border-radius:4px;padding:24px;width:100%;max-width:480px;max-height:90vh;overflow:auto;">
-      <h2 style="font-family:var(--font-display);font-size:20px;margin:0 0 4px;">Add a lead manually</h2>
+      <h2 style="font-family:var(--font-display);font-size:20px;margin:0 0 4px;">${isEdit ? "Edit lead" : "Add a lead manually"}</h2>
       <p class="sub" style="margin:0 0 16px;font-size:13px;">
-        Saved straight to the Leads sheet as a qualified lead.
+        ${isEdit
+          ? "Changes are saved straight back to this row in the Leads sheet."
+          : "Saved straight to the Leads sheet as a qualified lead."}
         Provide a phone number or an Instagram ID.
       </p>
       ${fieldsHtml}
       <div id="leadFormError" style="color:var(--warn);font-size:13px;min-height:18px;margin-bottom:8px;"></div>
       <div style="display:flex;gap:8px;">
-        <button class="btn-primary" id="saveLeadBtn">Save lead</button>
+        <button class="btn-primary" id="saveLeadBtn">${isEdit ? "Save changes" : "Save lead"}</button>
         <button id="cancelLeadBtn">Cancel</button>
       </div>
     </div>
@@ -240,8 +248,20 @@ function openLeadModal() {
     if (e.target === overlay) closeLeadModal();
   });
   document.getElementById("cancelLeadBtn").addEventListener("click", closeLeadModal);
-  document.getElementById("saveLeadBtn").addEventListener("click", saveManualLead);
+  document.getElementById("saveLeadBtn").addEventListener("click", () => {
+    if (isEdit) {
+      saveEditedLead(existingLead);
+    } else {
+      saveManualLead();
+    }
+  });
   document.addEventListener("keydown", onModalKey);
+
+  if (isEdit) {
+    LEAD_FORM_FIELDS.forEach((f) => {
+      document.getElementById(f.id).value = existingLead[f.col] || "";
+    });
+  }
 
   document.getElementById("f_business").focus();
 }
@@ -305,5 +325,82 @@ async function saveManualLead() {
     errorBox.textContent = "Could not save the lead. Check the browser console for details.";
     btn.disabled = false;
     btn.textContent = "Save lead";
+  }
+}
+
+// Writes the edit form's values back onto the lead's current row.
+// Re-locates the row by Lead ID + Business Name first (same approach
+// as runDelete/runBlacklist in lead-actions.js) since row numbers can
+// shift if other rows were deleted since the table was last loaded.
+async function saveEditedLead(existingLead) {
+  const errorBox = document.getElementById("leadFormError");
+  const btn = document.getElementById("saveLeadBtn");
+
+  const val = (id) => document.getElementById(id).value.trim();
+
+  const business = val("f_business");
+  const location = val("f_location");
+  const phone = val("f_phone");
+  const instagram = val("f_instagram");
+  const opportunity = val("f_opportunity");
+
+  if (!business || !location || !opportunity) {
+    errorBox.textContent = "Business name, location and opportunity are required.";
+    return;
+  }
+  if (!phone && !instagram) {
+    errorBox.textContent = "Add at least a phone number or an Instagram ID.";
+    return;
+  }
+
+  errorBox.textContent = "";
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+
+  try {
+    const row = await locateLead(
+      String(existingLead["Lead ID"]).trim(),
+      String(existingLead["Business Name"]).trim()
+    );
+
+    if (!row) {
+      await refresh();
+      throw new Error("This lead no longer exists. The list has been refreshed.");
+    }
+
+    if (leadHeaders.length === 0) {
+      const table = await SheetsAPI.getTable(CONFIG.TABS.LEADS);
+      leadHeaders = table.headers;
+    }
+
+    const valuesByHeader = {
+      "Business Name": business,
+      "Industry": val("f_industry"),
+      "Location": location,
+      "Phone": phone,
+      "Instagram ID": instagram,
+      "Opportunity": opportunity,
+    };
+
+    const updates = Object.entries(valuesByHeader)
+      .map(([col, value]) => {
+        const colLetter = SheetsAPI.colLetter(leadHeaders, col);
+        if (!colLetter) return null;
+        return SheetsAPI.updateCell(
+          CONFIG.TABS.LEADS + "!" + colLetter + row.__rowIndex,
+          value
+        );
+      })
+      .filter(Boolean);
+
+    await Promise.all(updates);
+
+    closeLeadModal();
+    await refresh();
+  } catch (e) {
+    console.error("Save lead edit failed:", e);
+    errorBox.textContent = e.message || "Could not save changes. Check the browser console for details.";
+    btn.disabled = false;
+    btn.textContent = "Save changes";
   }
 }
