@@ -35,6 +35,8 @@
 html, body {
   margin: 0;
   padding: 0;
+  height: 100%;
+  overflow: hidden;
   background: var(--paper);
   color: var(--ink);
   font-family: var(--font-body);
@@ -47,17 +49,22 @@ a { color: var(--brass-deep); }
 /* ---------- App shell ---------- */
 
 .app-shell {
-  display: grid;
-  grid-template-columns: 220px 1fr;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 220px;
+  height: 100vh;
   border-right: 1px solid var(--line);
   padding: 28px 20px;
   background: var(--paper);
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
 }
 
 .brand {
@@ -120,8 +127,11 @@ a { color: var(--brass-deep); }
 }
 
 .main {
+  margin-left: 220px;
   padding: 32px 40px 60px;
   max-width: 1180px;
+  height: 100vh;
+  overflow-y: auto;
 }
 
 .page-head {
