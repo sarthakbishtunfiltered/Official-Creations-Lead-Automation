@@ -1,3 +1,49 @@
+// ============================================================
+// OFFICIAL CREATIONS — SHARED FUNCTIONS
+// ============================================================
+
+// ============================================================
+// NAVIGATION PATH FIX
+// Removes accidentally duplicated frontend directories.
+// Preserves the rest of the deployment path.
+// ============================================================
+
+function getNavigationPath(filename) {
+  const url = new URL(window.location.href);
+
+  let segments = url.pathname.split("/").filter(Boolean);
+
+  // Remove duplicate consecutive frontend directories.
+  const normalized = [];
+
+  for (const segment of segments) {
+    if (
+      segment === "frontend" &&
+      normalized[normalized.length - 1] === "frontend"
+    ) {
+      continue;
+    }
+
+    normalized.push(segment);
+  }
+
+  // Remove current filename.
+  if (
+    normalized.length &&
+    normalized[normalized.length - 1].endsWith(".html")
+  ) {
+    normalized.pop();
+  }
+
+  const basePath = "/" + normalized.join("/") + "/";
+
+  return basePath + filename;
+}
+
+// ============================================================
+// APPLICATION SHELL
+// ============================================================
+
 function renderShell(activePage) {
   const items = [
     ["dashboard.html", "Dashboard"],
@@ -9,65 +55,151 @@ function renderShell(activePage) {
 
   const role = Auth.getRole();
 
+  const roleLabels = {
+    owner: "OWNER",
+    editor: "EDITOR",
+    viewer: "VIEWER",
+  };
+
   const navHtml = items
-    .map(([href, label]) => {
-      const active = href === activePage ? "active" : "";
-      return "<a href=\"" + href + "\" class=\"" + active + "\">" + label + "</a>";
+    .map(([filename, label]) => {
+      const active = filename === activePage ? "active" : "";
+
+      const href = getNavigationPath(filename);
+
+      return `
+        <a
+          href="${href}"
+          class="${active}"
+        >${label}</a>
+      `;
     })
     .join("");
 
   document.getElementById("shell").innerHTML = `
     <aside class="sidebar">
+
       <div>
         <p class="brand">Official Creations</p>
         <p class="brand-sub">Lead Automation</p>
       </div>
-      <nav class="nav">${navHtml}</nav>
+
+      <nav class="nav">
+        ${navHtml}
+      </nav>
+
       <div class="sidebar-foot">
+
         <div>Signed in</div>
-        <span class="role-tag">${role === "editor" ? "EDITOR" : "VIEWER"}</span>
+
+        <span class="role-tag">
+          ${roleLabels[role] || "VIEWER"}
+        </span>
+
         <div style="margin-top:10px;">
-          <button class="btn-quiet" id="signOutBtn" style="padding:4px 0;">Sign out</button>
+          <button
+            class="btn-quiet"
+            id="signOutBtn"
+            style="padding:4px 0;"
+          >
+            Sign out
+          </button>
         </div>
+
       </div>
+
     </aside>
+
     <main class="main" id="mainContent"></main>
   `;
-  document.getElementById("signOutBtn").addEventListener("click", Auth.signOut);
+
+  document
+    .getElementById("signOutBtn")
+    .addEventListener("click", Auth.signOut);
 }
+
+// ============================================================
+// POLLING
+// ============================================================
 
 function startPolling(fn, intervalMs) {
   fn();
-  return setInterval(fn, intervalMs || CONFIG.POLL_INTERVAL_MS);
+
+  return setInterval(
+    fn,
+    intervalMs || CONFIG.POLL_INTERVAL_MS
+  );
 }
+
+// ============================================================
+// HTML ESCAPING
+// ============================================================
 
 function escapeHtml(str) {
   const div = document.createElement("div");
+
   div.textContent = str ?? "";
+
   return div.innerHTML;
 }
 
+// ============================================================
+// PRIORITY
+// ============================================================
+
 function priorityClass(p) {
   const v = (p || "").toLowerCase();
+
   if (v.includes("high")) return "priority-high";
   if (v.includes("med")) return "priority-med";
+
   return "priority-low";
 }
 
+// ============================================================
+// BOOLEAN VALUE
+// ============================================================
+
 function truthy(v) {
   const s = String(v).trim().toLowerCase();
-  return s === "true" || s === "yes" || s === "1" || s === "✓";
+
+  return (
+    s === "true" ||
+    s === "yes" ||
+    s === "1" ||
+    s === "✓"
+  );
 }
 
+// ============================================================
+// REAL LEAD VALIDATION
+// ============================================================
 
-// A lead counts as "real" only once it has the basics filled in.
-// Blank or partial rows (e.g. a backend write that only got halfway
-// through) are hidden everywhere instead of showing up as clutter.
 function isRealLead(row) {
-  const businessName = String(row["Business Name"] || "").trim();
-  const location = String(row["Location"] || "").trim();
-  const phone = String(row["Phone"] || "").trim();
-  const instagram = String(row["Instagram ID"] || "").trim();
-  const opportunity = String(row["Opportunity"] || "").trim();
-  return Boolean(businessName && location && (phone || instagram) && opportunity);
+  const businessName = String(
+    row["Business Name"] || ""
+  ).trim();
+
+  const location = String(
+    row["Location"] || ""
+  ).trim();
+
+  const phone = String(
+    row["Phone"] || ""
+  ).trim();
+
+  const instagram = String(
+    row["Instagram ID"] || ""
+  ).trim();
+
+  const opportunity = String(
+    row["Opportunity"] || ""
+  ).trim();
+
+  return Boolean(
+    businessName &&
+    location &&
+    (phone || instagram) &&
+    opportunity
+  );
 }

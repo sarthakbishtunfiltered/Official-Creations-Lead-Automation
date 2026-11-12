@@ -9,7 +9,7 @@ const SETTINGS_KEYS = {
 };
 
 Auth.requireSession(() => {
-  renderShell("dashboard.html");
+  renderShell("frontend/dashboard.html");
 
   document.getElementById("mainContent").innerHTML = `
     <div class="page-head">

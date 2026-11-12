@@ -1,5 +1,5 @@
 Auth.requireSession(() => {
-  renderShell("called-rejected.html");
+  renderShell("frontend/called-rejected.html");
   document.getElementById("mainContent").innerHTML = `
     <div class="page-head">
       <div><h1>Called / Rejected</h1><div class="sub">Leads that were called and rejected</div></div>

@@ -21,7 +21,7 @@ let industryOptions = [];
 let sourceOptions = [];
 
 Auth.requireSession(() => {
-  renderShell("settings.html");
+  renderShell("frontend/settings.html");
   const isEditor = Auth.isEditor();
 
   document.getElementById("mainContent").innerHTML = `

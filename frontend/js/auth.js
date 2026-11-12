@@ -1,255 +1,241 @@
 const Auth = (() => {
+  const STORAGE = {
+    TOKEN: "occ_access_token",
+    EXPIRY: "occ_token_expires_at",
+    ROLE: "occ_role",
+    EMAIL: "occ_user_email",
+  };
+
+  const SCOPES = [
+    "openid",
+    "email",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+  ].join(" ");
+
   let tokenClient = null;
-  let accessToken = null;
-  let role = null;
-  let tokenExpiresAt = 0;
 
-  const TOKEN_KEY = "occ_access_token";
-  const EXPIRY_KEY = "occ_token_expires_at";
-  const ROLE_KEY = "occ_role";
-
-  function loadSession() {
-    accessToken = sessionStorage.getItem(TOKEN_KEY);
-    tokenExpiresAt =
-      parseInt(sessionStorage.getItem(EXPIRY_KEY) || "0", 10);
-    role = sessionStorage.getItem(ROLE_KEY);
-
-    // Keep a small safety buffer so we do not reuse a token
-    // that is about to expire.
-    if (
-      !accessToken ||
-      !tokenExpiresAt ||
-      Date.now() >= tokenExpiresAt - 60000
-    ) {
-      accessToken = null;
-      tokenExpiresAt = 0;
-      sessionStorage.removeItem(TOKEN_KEY);
-      sessionStorage.removeItem(EXPIRY_KEY);
-    }
+  function saveSession(token, expiresIn) {
+    sessionStorage.setItem(STORAGE.TOKEN, token);
+    sessionStorage.setItem(
+      STORAGE.EXPIRY,
+      String(Date.now() + expiresIn * 1000)
+    );
   }
 
-  function init(onReady) {
-    loadSession();
+  function clearSession() {
+    Object.values(STORAGE).forEach((key) =>
+      sessionStorage.removeItem(key)
+    );
+  }
 
-    if (accessToken && role) {
-      onReady({
-        ok: true,
-        role,
-        cached: true,
-      });
-      return;
+  function loadSession() {
+    const token = sessionStorage.getItem(STORAGE.TOKEN);
+    const expiry = Number(sessionStorage.getItem(STORAGE.EXPIRY));
+
+    if (!token || !expiry || expiry <= Date.now() + 60000) {
+      clearSession();
+      return null;
     }
 
-    tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: CONFIG.GOOGLE_CLIENT_ID,
+    return token;
+  }
 
-      scope: [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive.metadata.readonly",
-      ].join(" "),
+  function init() {
+    return new Promise((resolve, reject) => {
+      if (!window.google?.accounts?.oauth2) {
+        reject(new Error("Google Identity Services failed to load."));
+        return;
+      }
 
-      callback: async (resp) => {
-        if (resp.error) {
-          onReady({
-            ok: false,
-            error: resp.error,
-          });
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CONFIG.GOOGLE_CLIENT_ID,
+        scope: SCOPES,
+        callback: (response) => {
+          if (response.error || !response.access_token) {
+            reject(new Error(response.error || "Google authentication failed."));
+            return;
+          }
+
+          saveSession(response.access_token, response.expires_in);
+          resolve(response.access_token);
+        },
+      });
+
+      resolve(tokenClient);
+    });
+  }
+
+  async function requestToken(prompt = "") {
+    if (!tokenClient) await init();
+
+    return new Promise((resolve, reject) => {
+      tokenClient.callback = (response) => {
+        if (response.error || !response.access_token) {
+          reject(new Error(response.error || "Google authentication failed."));
           return;
         }
 
-        accessToken = resp.access_token;
+        saveSession(response.access_token, response.expires_in);
+        resolve(response.access_token);
+      };
 
-        const expiresIn =
-          Number(resp.expires_in) || 3600;
-
-        tokenExpiresAt =
-          Date.now() + expiresIn * 1000;
-
-        sessionStorage.setItem(
-          TOKEN_KEY,
-          accessToken
-        );
-
-        sessionStorage.setItem(
-          EXPIRY_KEY,
-          String(tokenExpiresAt)
-        );
-
-        const result = await resolveRole();
-
-        onReady(result);
-      },
+      tokenClient.requestAccessToken({ prompt });
     });
   }
 
-  function signIn() {
-    if (!tokenClient) {
-      init(() => {});
+  async function getGoogleIdentity(token) {
+    const response = await fetch(
+      "https://www.googleapis.com/oauth2/v3/userinfo",
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error("Unable to verify your Google account.");
     }
 
-    tokenClient.requestAccessToken({
-      prompt: "consent",
-    });
-  }
+    const identity = await response.json();
 
-  function signOut() {
-    if (accessToken) {
-      google.accounts.oauth2.revoke(
-        accessToken,
-        () => {}
-      );
+    if (!identity.email || identity.email_verified !== true) {
+      throw new Error("Your Google email could not be verified.");
     }
 
-    accessToken = null;
-    role = null;
-    tokenExpiresAt = 0;
-
-    sessionStorage.removeItem(TOKEN_KEY);
-    sessionStorage.removeItem(EXPIRY_KEY);
-    sessionStorage.removeItem(ROLE_KEY);
-
-    window.location.href = "index.html";
+    return identity;
   }
 
-  async function resolveRole() {
-    try {
-      const testUrl =
-        `https://sheets.googleapis.com/v4/spreadsheets/` +
-        `${CONFIG.SPREADSHEET_ID}?fields=spreadsheetId`;
+  async function resolveRole(token) {
+    const identity = await getGoogleIdentity(token);
+    const email = identity.email.toLowerCase();
 
-      const readCheck = await fetch(testUrl, {
-        headers: authHeaders(),
-      });
-
-      if (
-        readCheck.status === 403 ||
-        readCheck.status === 404
-      ) {
-        return {
-          ok: false,
-          error: "no_access",
-        };
+    const sheetResponse = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}?fields=spreadsheetId`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
       }
+    );
 
-      if (!readCheck.ok) {
-        return {
-          ok: false,
-          error: "unknown",
-        };
-      }
+    if (!sheetResponse.ok) {
+      throw new Error("You do not have access to the dashboard spreadsheet.");
+    }
 
-      const permUrl =
-        `https://www.googleapis.com/drive/v3/files/` +
-        `${CONFIG.DRIVE_FILE_ID}` +
-        `?fields=capabilities(canEdit)`;
+    let role;
 
-      const permResp = await fetch(
-        permUrl,
+    if (email === CONFIG.OWNER_EMAIL.toLowerCase()) {
+      role = "owner";
+    } else {
+      const driveResponse = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${CONFIG.DRIVE_FILE_ID}?fields=capabilities(canEdit)`,
         {
-          headers: authHeaders(),
+          headers: { Authorization: `Bearer ${token}` },
         }
       );
 
-      if (permResp.ok) {
-        const data = await permResp.json();
-
-        role =
-          data.capabilities &&
-          data.capabilities.canEdit
-            ? "editor"
-            : "viewer";
-      } else {
-        role = "viewer";
+      if (!driveResponse.ok) {
+        throw new Error("Unable to verify your spreadsheet permissions.");
       }
 
-      sessionStorage.setItem(
-        ROLE_KEY,
-        role
-      );
+      const file = await driveResponse.json();
+      role = file.capabilities?.canEdit ? "editor" : "viewer";
+    }
 
-      return {
-        ok: true,
-        role,
-      };
-    } catch (e) {
-      console.error(
-        "Role resolution failed:",
-        e
-      );
+    sessionStorage.setItem(STORAGE.ROLE, role);
+    sessionStorage.setItem(STORAGE.EMAIL, email);
 
-      return {
-        ok: false,
-        error: "network",
-      };
+    return role;
+  }
+
+  async function signIn() {
+    try {
+      await init();
+      await requestToken("consent");
+      window.location.href = "frontend/dashboard.html";
+    } catch (error) {
+      console.error("Sign-in failed:", error);
+      alert(error.message || "Unable to sign in.");
     }
   }
 
+  async function requireSession(onReady) {
+    try {
+      let token = loadSession();
+
+      if (!token) {
+        await init();
+        token = await requestToken("");
+      }
+
+      const role = await resolveRole(token);
+
+      if (typeof onReady === "function") {
+        onReady(role);
+      }
+
+      return role;
+    } catch (error) {
+      console.error("Access verification failed:", error);
+      clearSession();
+      window.location.href = "index.html";
+      return null;
+    }
+  }
+
+  function signOut() {
+    const token = sessionStorage.getItem(STORAGE.TOKEN);
+
+    if (token && window.google?.accounts?.oauth2) {
+      google.accounts.oauth2.revoke(token);
+    }
+
+    clearSession();
+    window.location.href = "index.html";
+  }
+
   function authHeaders() {
+    const token = loadSession();
+
+    if (!token) {
+      throw new Error("Your session has expired. Please sign in again.");
+    }
+
     return {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
     };
   }
 
   function getToken() {
-    loadSession();
-    return accessToken;
+    return loadSession();
   }
 
   function getRole() {
-    return (
-      role ||
-      sessionStorage.getItem(ROLE_KEY)
-    );
+    return sessionStorage.getItem(STORAGE.ROLE);
+  }
+
+  function getEmail() {
+    return sessionStorage.getItem(STORAGE.EMAIL);
   }
 
   function isEditor() {
-    return getRole() === "editor";
+    return ["owner", "editor"].includes(getRole());
   }
 
-  function requireSession(onReady) {
-    loadSession();
-
-    // Fast path:
-    // valid token + known role = no Google OAuth request,
-    // no Sheets request, no Drive request.
-    if (accessToken && role) {
-      onReady({
-        ok: true,
-        role,
-        cached: true,
-      });
-      return;
-    }
-
-    init((result) => {
-      if (!result.ok) {
-        window.location.href =
-          "index.html?denied=" +
-          (result.error || "unknown");
-
-        return;
-      }
-
-      onReady(result);
-    });
-
-    // Only request a token when the cached session
-    // cannot be reused.
-    if (!accessToken || !role) {
-      tokenClient.requestAccessToken({
-        prompt: "",
-      });
-    }
+  function isOwner() {
+    return getRole() === "owner";
   }
 
   return {
     init,
     signIn,
     signOut,
+    requireSession,
+    resolveRole,
+    authHeaders,
     getToken,
     getRole,
+    getEmail,
     isEditor,
-    requireSession,
-    authHeaders,
+    isOwner,
   };
 })();

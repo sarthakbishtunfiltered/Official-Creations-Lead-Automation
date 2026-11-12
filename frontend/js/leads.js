@@ -15,7 +15,7 @@ let allLeadRows = [];
 let leadHeaders = [];
 
 Auth.requireSession(() => {
-  renderShell("leads.html");
+  renderShell("frontend/leads.html");
   const isEditor = Auth.isEditor();
   const notifyConfigured = !!(CONFIG.NOTIFY_WEBHOOK_URL && CONFIG.NOTIFY_WEBHOOK_URL.trim());
 

@@ -1,6 +1,6 @@
 // ============================================================
 // LEAD ACTIONS - delete a lead permanently, or blacklist it.
-// Editors only. Loaded on leads.html after leads.js.
+// Editors only. Loaded on frontend/leads.html after frontend/leads.js.
 // ============================================================
 
 const BLACKLIST_DEFAULT_HEADERS = [

@@ -40,4 +40,5 @@ const CONFIG = {
   // credential — just a shared password between this site and that
   // one Apps Script endpoint, so a stranger can't call it.
   NOTIFY_WEBHOOK_SECRET: "balawala@praharsh",
+  OWNER_EMAIL: "sarthakbishtunfiltered@gmail.com",
 };

@@ -1,5 +1,5 @@
 Auth.requireSession(() => {
-  renderShell("blacklisted.html");
+  renderShell("frontend/blacklisted.html");
   document.getElementById("mainContent").innerHTML = `
     <div class="page-head">
       <div><h1>Blacklisted</h1><div class="sub">Businesses excluded from discovery</div></div>
