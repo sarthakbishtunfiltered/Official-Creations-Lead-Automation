@@ -13,6 +13,9 @@ const Auth = (() => {
     "https://www.googleapis.com/auth/drive.metadata.readonly",
   ].join(" ");
 
+  const LOGIN_URL = "/index.html";
+  const DASHBOARD_URL = "/frontend/dashboard.html";
+
   let tokenClient = null;
 
   function saveSession(token, expiresIn) {
@@ -150,7 +153,7 @@ const Auth = (() => {
     try {
       await init();
       await requestToken("consent");
-      window.location.href = "frontend/dashboard.html";
+      window.location.href = DASHBOARD_URL;
     } catch (error) {
       console.error("Sign-in failed:", error);
       alert(error.message || "Unable to sign in.");
@@ -176,7 +179,7 @@ const Auth = (() => {
     } catch (error) {
       console.error("Access verification failed:", error);
       clearSession();
-      window.location.href = "index.html";
+      window.location.href = LOGIN_URL;
       return null;
     }
   }
@@ -189,7 +192,7 @@ const Auth = (() => {
     }
 
     clearSession();
-    window.location.href = "index.html";
+    window.location.href = LOGIN_URL;
   }
 
   function authHeaders() {
