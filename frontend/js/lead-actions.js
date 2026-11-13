@@ -11,27 +11,21 @@ const BLACKLIST_DEFAULT_HEADERS = [
   "Blacklisted At",
 ];
 
-function pad2(n) {
-  return String(n).padStart(2, "0");
-}
+// nowStamp() / pad2() now live in shared.js (also used by the
+// Team and Approvals pages).
 
-function nowStamp() {
-  const d = new Date();
-
-  return (
-    d.getFullYear() +
-    "-" +
-    pad2(d.getMonth() + 1) +
-    "-" +
-    pad2(d.getDate()) +
-    " " +
-    pad2(d.getHours()) +
-    ":" +
-    pad2(d.getMinutes()) +
-    ":" +
-    pad2(d.getSeconds())
-  );
-}
+const APPROVAL_DEFAULT_HEADERS = [
+  "Request ID",
+  "Lead ID",
+  "Business Name",
+  "Action",
+  "Reason",
+  "Requested By",
+  "Requested At",
+  "Status",
+  "Decided By",
+  "Decided At",
+];
 
 // Find the lead's CURRENT row in the sheet.
 // Row numbers can change after other rows are deleted.
@@ -273,6 +267,94 @@ function openActionModal(opts) {
   }
 }
 
+// Editors who are not approvers cannot delete/blacklist directly.
+// Their request is written to the "Approval Requests" tab as Pending;
+// the Owner or an approver decides it on the Approvals page.
+async function submitApprovalRequest(action, leadId, businessName, reason) {
+  let table;
+
+  try {
+    table = await SheetsAPI.getTable(CONFIG.TABS.APPROVALS);
+  } catch (e) {
+    console.error("Approval Requests read failed:", e);
+    throw new Error(
+      'Could not read the "' +
+        CONFIG.TABS.APPROVALS +
+        '" tab. Ask the Owner to check that it exists.'
+    );
+  }
+
+  if (table.headers.length === 0) {
+    throw new Error(
+      'The "' +
+        CONFIG.TABS.APPROVALS +
+        '" tab has no header row. Ask the Owner to add it.'
+    );
+  }
+
+  const label = action === "delete" ? "Delete" : "Blacklist";
+
+  const alreadyPending = table.rows.some(
+    (r) =>
+      String(r["Status"] || "").trim().toLowerCase() === "pending" &&
+      String(r["Lead ID"] || "").trim() === leadId &&
+      String(r["Action"] || "").trim().toLowerCase() === action
+  );
+
+  if (alreadyPending) {
+    throw new Error(
+      "A request to " + action + " this lead is already waiting for approval."
+    );
+  }
+
+  const values = {
+    "Request ID": "REQ-" + Date.now(),
+    "Lead ID": leadId,
+    "Business Name": businessName,
+    "Action": label,
+    "Reason": reason,
+    "Requested By": Auth.getEmail() || "",
+    "Requested At": nowStamp(),
+    "Status": "Pending",
+    "Decided By": "",
+    "Decided At": "",
+  };
+
+  await SheetsAPI.appendRow(
+    CONFIG.TABS.APPROVALS,
+    table.headers.map((h) =>
+      Object.prototype.hasOwnProperty.call(values, h) ? values[h] : ""
+    )
+  );
+}
+
+function openApprovalRequestModal(action, leadId, name) {
+  openActionModal({
+    title: "Request approval to " + action + "?",
+    message:
+      '"' +
+      name +
+      '" will not be changed yet. The Owner or an approver will review your request on the Approvals page.',
+    confirmText: "Send request",
+    needReason: true,
+    onConfirm: async (reason) => {
+      await submitApprovalRequest(action, leadId, name, reason);
+
+      // The modal closes right after this resolves; show a short
+      // confirmation once it has.
+      setTimeout(() => {
+        openActionModal({
+          title: "Request sent",
+          message:
+            "The Owner or an approver will see it on the Approvals page.",
+          confirmText: "OK",
+          onConfirm: async () => {},
+        });
+      }, 0);
+    },
+  });
+}
+
 // One click listener for every Edit / Blacklist / Delete button.
 document.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-lead-action]");
@@ -310,6 +392,8 @@ document.addEventListener("click", (e) => {
     // prefilled with this row's current values -- see
     // openLeadModal(existingLead) / saveEditedLead() there.
     openLeadModal(lead);
+  } else if (action === "delete" && !Auth.canApprove()) {
+    openApprovalRequestModal("delete", leadId, name);
   } else if (action === "delete") {
     openActionModal({
       title: "Delete this lead?",
@@ -322,6 +406,8 @@ document.addEventListener("click", (e) => {
       onConfirm: () =>
         runDelete(leadId, name),
     });
+  } else if (action === "blacklist" && !Auth.canApprove()) {
+    openApprovalRequestModal("blacklist", leadId, name);
   } else if (action === "blacklist") {
     openActionModal({
       title: "Blacklist this lead?",

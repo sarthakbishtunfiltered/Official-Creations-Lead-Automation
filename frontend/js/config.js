@@ -24,6 +24,11 @@ const CONFIG = {
     BLACKLISTED: "Blacklisted",
     CALLED_REJECTED: "Called Rejected",
     SETTINGS: "Settings",
+    // Team tab:     Email | Rank | Can Approve | Added By | Added At
+    TEAM: "Team",
+    // Approvals tab: Request ID | Lead ID | Business Name | Action | Reason |
+    //                Requested By | Requested At | Status | Decided By | Decided At
+    APPROVALS: "Approval Requests",
   },
 
   // How often the site re-reads the sheet, in milliseconds.

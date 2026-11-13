@@ -25,7 +25,7 @@ Auth.requireSession(() => {
         <h1>Leads</h1>
         <div class="sub">Full lead database, synced live with Google Sheets</div>
       </div>
-      ${isEditor ? '<button class="btn-primary" id="addLeadBtn">+ Add lead manually</button> <button class="btn-quiet" id="cleanupBtn">Clean up blank rows</button> <button class="btn-quiet" id="removeUnapprovedBtn" style="color:var(--warn);">Remove unapproved leads</button>' + (notifyConfigured ? ' <button class="btn-quiet" id="sendNotifyBtn">Send notifications now</button>' : "") : ""}
+      ${isEditor ? '<button class="btn-primary" id="addLeadBtn">+ Add lead manually</button> <button class="btn-quiet" id="cleanupBtn">Clean up blank rows</button>' + (Auth.canApprove() ? ' <button class="btn-quiet" id="removeUnapprovedBtn" style="color:var(--warn);">Remove unapproved leads</button>' : "") + (notifyConfigured ? ' <button class="btn-quiet" id="sendNotifyBtn">Send notifications now</button>' : "") : ""}
       </div>
     </div>
 
@@ -57,7 +57,9 @@ Auth.requireSession(() => {
       }
     });
 
-    document.getElementById("removeUnapprovedBtn").addEventListener("click", async () => {
+    // Bulk-deleting is a delete too, so it is limited to the Owner and
+    // approvers; other editors request deletes one lead at a time.
+    if (Auth.canApprove()) document.getElementById("removeUnapprovedBtn").addEventListener("click", async () => {
       const btn = document.getElementById("removeUnapprovedBtn");
       btn.disabled = true;
       btn.textContent = "Scanning…";

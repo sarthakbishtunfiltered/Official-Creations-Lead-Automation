@@ -159,6 +159,16 @@ const SheetsAPI = (() => {
     const businessNameIndex =
       headers.indexOf("Business Name");
 
+    // Tabs that are not lead sheets (Team, Approval Requests) have
+    // neither identifying column. For those, any non-empty cell means
+    // the row is in use -- otherwise appendRow would think the tab is
+    // empty and keep overwriting row 2.
+    if (leadIdIndex === -1 && businessNameIndex === -1) {
+      return row.some(
+        (cell) => String(cell ?? "").trim() !== ""
+      );
+    }
+
     const leadId =
       leadIdIndex !== -1
         ? String(

@@ -54,11 +54,34 @@
     const signInBtn =
       document.getElementById("signInBtn");
 
+    const DENIED_MESSAGES = {
+      no_access:
+        "This Google account doesn't have access to the Lead Database sheet, so it can't access this dashboard. Ask a teammate to share the sheet with you, then try again.",
+      not_on_team:
+        "This Google account can open the sheet but hasn't been added to the team yet. Ask the Owner to add your email on the Team tab, then try again.",
+    };
+
+    // Extra detail for "not on team": which check failed, and for which email.
+    const TEAM_WHY = {
+      tab_missing: 'The sheet has no tab named "Team" (check the name and spelling).',
+      empty: "The Team tab has no teammates yet.",
+      no_email_column: 'The Team tab needs an "Email" header in row 1.',
+      no_row: "That email isn't listed on the Team tab.",
+    };
+
     function showDeniedMessage(reason) {
-      gateMsg.innerHTML =
-        reason === "no_access"
-          ? "This Google account doesn't have access to the Lead Database sheet, so it can't access this dashboard. Ask a teammate to share the sheet with you, then try again."
-          : "Something went wrong signing in. Please try again.";
+      let message =
+        DENIED_MESSAGES[reason] ||
+        "Something went wrong signing in. Please try again.";
+
+      const email = params.get("email");
+      const why = TEAM_WHY[params.get("why")];
+
+      if (reason === "not_on_team" && email) {
+        message += " Signed in as: " + email + "." + (why ? " " + why : "");
+      }
+
+      gateMsg.textContent = message;
     }
 
     function startAuth() {

@@ -4,6 +4,7 @@ const Auth = (() => {
     EXPIRY: "occ_token_expires_at",
     ROLE: "occ_role",
     EMAIL: "occ_user_email",
+    CAN_APPROVE: "occ_can_approve",
   };
 
   const SCOPES = [
@@ -108,6 +109,77 @@ const Auth = (() => {
     return identity;
   }
 
+  // An Error that carries a short code, so the sign-in page can show
+  // the right message (see ?denied= handling in index.html).
+  function accessError(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
+  }
+
+  // Looks the person up on the Team tab (Email | Rank | Can Approve ...).
+  // Returns { member } when found, or { member: null, why } where why is
+  // one of: tab_missing, empty, no_email_column, no_row.
+  async function lookupTeamMember(token, email) {
+    const response = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${CONFIG.SPREADSHEET_ID}/values/${encodeURIComponent(CONFIG.TABS.TEAM)}`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+
+    // 400 = the Team tab does not exist (or is named differently).
+    if (response.status === 400) {
+      return { member: null, why: "tab_missing" };
+    }
+
+    if (!response.ok) {
+      throw accessError("unknown", "Unable to read the team list.");
+    }
+
+    const data = await response.json();
+    const values = data.values || [];
+
+    if (values.length < 2) {
+      return { member: null, why: "empty" };
+    }
+
+    const headers = values[0].map((h) => String(h).trim().toLowerCase());
+    const emailIdx = headers.indexOf("email");
+    const rankIdx = headers.indexOf("rank");
+    const approveIdx = headers.indexOf("can approve");
+
+    if (emailIdx === -1) {
+      return { member: null, why: "no_email_column" };
+    }
+
+    const row = values
+      .slice(1)
+      .find(
+        (r) =>
+          String(r[emailIdx] ?? "").trim().toLowerCase() === email
+      );
+
+    if (!row) {
+      return { member: null, why: "no_row" };
+    }
+
+    const approveValue = String(row[approveIdx] ?? "").trim().toLowerCase();
+
+    return {
+      member: {
+        rank: String(row[rankIdx] ?? "").trim().toLowerCase(),
+        canApprove: ["true", "yes", "1", "\u2713"].includes(approveValue),
+      },
+    };
+  }
+
+  // Who can sign in, and as what:
+  //  - The Owner (CONFIG.OWNER_EMAIL) always gets in and can do everything.
+  //  - Anyone else needs BOTH real access to the Google Sheet AND a row on
+  //    the Team tab. Google's own permission (Drive canEdit) is still the
+  //    ceiling: a Team "Editor" without Sheet edit access is only a Viewer.
+  //  - "Can Approve" only counts for Editors.
   async function resolveRole(token) {
     const identity = await getGoogleIdentity(token);
     const email = identity.email.toLowerCase();
@@ -120,13 +192,20 @@ const Auth = (() => {
     );
 
     if (!sheetResponse.ok) {
-      throw new Error("You do not have access to the dashboard spreadsheet.");
+      throw accessError(
+        sheetResponse.status === 403 || sheetResponse.status === 404
+          ? "no_access"
+          : "unknown",
+        "You do not have access to the dashboard spreadsheet."
+      );
     }
 
     let role;
+    let canApprove = false;
 
     if (email === CONFIG.OWNER_EMAIL.toLowerCase()) {
       role = "owner";
+      canApprove = true;
     } else {
       const driveResponse = await fetch(
         `https://www.googleapis.com/drive/v3/files/${CONFIG.DRIVE_FILE_ID}?fields=capabilities(canEdit)`,
@@ -136,15 +215,34 @@ const Auth = (() => {
       );
 
       if (!driveResponse.ok) {
-        throw new Error("Unable to verify your spreadsheet permissions.");
+        throw accessError(
+          "unknown",
+          "Unable to verify your spreadsheet permissions."
+        );
       }
 
       const file = await driveResponse.json();
-      role = file.capabilities?.canEdit ? "editor" : "viewer";
+      const driveCanEdit = Boolean(file.capabilities?.canEdit);
+
+      const { member, why } = await lookupTeamMember(token, email);
+
+      if (!member) {
+        const denied = accessError(
+          "not_on_team",
+          "This account has not been added to the team."
+        );
+        denied.email = email;
+        denied.why = why;
+        throw denied;
+      }
+
+      role = member.rank === "editor" && driveCanEdit ? "editor" : "viewer";
+      canApprove = role === "editor" && member.canApprove;
     }
 
     sessionStorage.setItem(STORAGE.ROLE, role);
     sessionStorage.setItem(STORAGE.EMAIL, email);
+    sessionStorage.setItem(STORAGE.CAN_APPROVE, canApprove ? "true" : "false");
 
     return role;
   }
@@ -179,7 +277,11 @@ const Auth = (() => {
     } catch (error) {
       console.error("Access verification failed:", error);
       clearSession();
-      window.location.href = LOGIN_URL;
+      window.location.href = error.code
+        ? `${LOGIN_URL}?denied=${encodeURIComponent(error.code)}` +
+          (error.email ? `&email=${encodeURIComponent(error.email)}` : "") +
+          (error.why ? `&why=${encodeURIComponent(error.why)}` : "")
+        : LOGIN_URL;
       return null;
     }
   }
@@ -228,6 +330,11 @@ const Auth = (() => {
     return getRole() === "owner";
   }
 
+  // Owner, or an Editor the Owner flagged "Can Approve" on the Team tab.
+  function canApprove() {
+    return sessionStorage.getItem(STORAGE.CAN_APPROVE) === "true";
+  }
+
   return {
     init,
     signIn,
@@ -240,5 +347,6 @@ const Auth = (() => {
     getEmail,
     isEditor,
     isOwner,
+    canApprove,
   };
 })();

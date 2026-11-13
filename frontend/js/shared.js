@@ -53,6 +53,15 @@ function renderShell(activePage) {
     ["settings.html", "Settings"],
   ];
 
+  // Approvals: Owner + anyone flagged "Can Approve". Team: Owner only.
+  if (Auth.canApprove()) {
+    items.push(["approvals.html", "Approvals"]);
+  }
+
+  if (Auth.isOwner()) {
+    items.push(["team.html", "Team"]);
+  }
+
   const role = Auth.getRole();
 
   const roleLabels = {
@@ -201,5 +210,31 @@ function isRealLead(row) {
     location &&
     (phone || instagram) &&
     opportunity
+  );
+}
+// ============================================================
+// TIMESTAMP — "YYYY-MM-DD HH:MM:SS" in the viewer's local time.
+// Used by lead actions, the Team page and the Approvals page.
+// ============================================================
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function nowStamp() {
+  const d = new Date();
+
+  return (
+    d.getFullYear() +
+    "-" +
+    pad2(d.getMonth() + 1) +
+    "-" +
+    pad2(d.getDate()) +
+    " " +
+    pad2(d.getHours()) +
+    ":" +
+    pad2(d.getMinutes()) +
+    ":" +
+    pad2(d.getSeconds())
   );
 }
