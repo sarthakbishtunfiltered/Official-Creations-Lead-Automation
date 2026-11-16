@@ -34,6 +34,22 @@ const CONFIG = {
   // How often the site re-reads the sheet, in milliseconds.
   POLL_INTERVAL_MS: 30000,
 
+  // The only industries offered in the Add lead / Edit lead dropdown, in
+  // this order. Anything else is typed via "Add new industry..." and saved
+  // on that lead only; edit this list to add a niche to the dropdown.
+  INDUSTRIES: [
+    "Interior Designers",
+    "Wedding & Event Photographers",
+    "Boutique & Women's Salons",
+    "Cloud Kitchens (Homemaker-Run)",
+    "Freelance Architects & Small Design Firms",
+    "Event Decorators",
+    "Independent Doctors, Dentists & Clinics",
+    "Real Estate Agents & Brokers",
+    "Driving Schools",
+    "CA Firms & Small Legal Practices",
+  ],
+
   // Apps Script Web App URL for the "Send notifications now" button
   // (see notify_on_approve.gs's doGet / sendPendingNotifications).
   // Leave both blank to hide the button entirely.

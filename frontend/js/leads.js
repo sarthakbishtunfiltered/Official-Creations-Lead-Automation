@@ -239,7 +239,7 @@ function openLeadModal(existingLead) {
 
   const fieldsHtml = LEAD_FORM_FIELDS.map((f) => {
     if (f.id === "f_industry") {
-      const { fixed, custom } = industryOptions(existingLead ? existingLead["Industry"] : "");
+      const fixed = industryOptions();
       const opt = (name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`;
 
       return `
@@ -248,12 +248,11 @@ function openLeadModal(existingLead) {
         <select id="f_industry" data-placeholder="Select an industry">
           <option value="">No industry</option>
           <optgroup label="Our industries">${fixed.map(opt).join("")}</optgroup>
-          ${custom.length ? `<optgroup label="Added by the team">${custom.map(opt).join("")}</optgroup>` : ""}
           <optgroup label="Not listed?">
             <option value="__other">+ Add new industry…</option>
           </optgroup>
         </select>
-        <input type="text" id="f_industry_other" class="hidden" placeholder="Type the new industry — it will be added to the list" style="margin-top:8px;" />
+        <input type="text" id="f_industry_other" class="hidden" placeholder="Type the industry" style="margin-top:8px;" />
       </div>`;
     }
 
@@ -310,7 +309,17 @@ function openLeadModal(existingLead) {
       if (f.id === "f_industry") {
         const want = String(existingLead[f.col] || "").trim().toLowerCase();
         const match = [...el.options].find((o) => o.value.toLowerCase() === want);
-        el.value = match ? match.value : "";
+        if (match) {
+          el.value = match.value;
+        } else if (want) {
+          // Not one of the listed niches: keep it as a typed-in industry.
+          el.value = "__other";
+          const other = document.getElementById("f_industry_other");
+          other.value = String(existingLead[f.col] || "").trim();
+          other.classList.remove("hidden");
+        } else {
+          el.value = "";
+        }
       } else {
         el.value = existingLead[f.col] || "";
       }
@@ -480,38 +489,10 @@ async function saveEditedLead(existingLead) {
 // sheet (case-insensitive), plus "Other" to type a new one.
 // ============================================================
 
-function industryOptions(current) {
-  const fixed = (CONFIG.INDUSTRIES || []).slice();
-  const fixedKeys = new Set(fixed.map((n) => n.toLowerCase()));
-
-  // Industries on the sheet that are not in the fixed list:
-  // lower-case key -> { spelling: how many leads use it }
-  const groups = new Map();
-
-  const tally = (raw) => {
-    const name = String(raw || "").trim();
-    const key = name.toLowerCase();
-    if (!name || fixedKeys.has(key)) return;
-    if (!groups.has(key)) groups.set(key, new Map());
-    const spellings = groups.get(key);
-    spellings.set(name, (spellings.get(name) || 0) + 1);
-  };
-
-  allLeadRows.forEach((r) => tally(r["Industry"]));
-
-  // The lead being edited may use an industry no other lead has.
-  if (!groups.has(String(current || "").trim().toLowerCase())) tally(current);
-
-  // For "Salon" vs "salon" show the spelling used most; on a tie,
-  // prefer the capitalised one.
-  const custom = [...groups.values()]
-    .map((spellings) => {
-      const score = ([name, count]) => count * 2 + (/^[A-Z]/.test(name) ? 1 : 0);
-      return [...spellings.entries()].sort((a, b) => score(b) - score(a))[0][0];
-    })
-    .sort((a, b) => a.localeCompare(b));
-
-  return { fixed, custom };
+// The dropdown offers only the niches listed in CONFIG.INDUSTRIES
+// (config.js). Anything else is typed via "Add new industry".
+function industryOptions() {
+  return (CONFIG.INDUSTRIES || []).slice();
 }
 
 function industryValue() {
