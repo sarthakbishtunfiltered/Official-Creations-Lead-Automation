@@ -54,12 +54,25 @@ Auth.requireSession(() => {
       </p>
       <div id="teamTableWrap">Loading…</div>
     </div>
+    <div class="panel">
+      <h2>Assigned leads</h2>
+      <p class="sub" style="margin:-6px 0 4px;font-size:13px;">
+        Tick the leads you want to tell a teammate about, then email them.
+        Each teammate gets one email listing only the leads you ticked for them.
+      </p>
+      <div id="assignWrap">Loading…</div>
+    </div>
   `;
 
   document.getElementById("addMemberBtn").addEventListener("click", () => openMemberModal());
 
-  startPolling(refresh, CONFIG.POLL_INTERVAL_MS);
+  startPolling(refreshAll, CONFIG.POLL_INTERVAL_MS);
 });
+
+async function refreshAll() {
+  await refresh();
+  await refreshAssignments();
+}
 
 async function refresh() {
   try {
@@ -356,3 +369,214 @@ async function saveEditedMember(existingMember) {
     btn.textContent = "Save changes";
   }
 }
+
+// ============================================================
+// ASSIGNED LEADS -- email teammates about the leads assigned to them.
+// Sends through the same Apps Script Web App as "Send notifications
+// now". The script only emails the Owner or someone on the Team tab,
+// and only about leads that are currently assigned to that person.
+// ============================================================
+
+const ASSIGN_COL = "Assigned To";
+const pickedForEmail = new Set();   // Lead IDs ticked
+let assignedByPerson = {};          // email -> [lead rows]
+let assignStatus = {};              // email -> { ok, text }
+let assignColumnPresent = false;
+
+function mailConfigured() {
+  return !!(CONFIG.NOTIFY_WEBHOOK_URL && CONFIG.NOTIFY_WEBHOOK_URL.trim());
+}
+
+function leadKey(r) {
+  return String(r["Lead ID"] || "").trim();
+}
+
+async function refreshAssignments() {
+  const wrap = document.getElementById("assignWrap");
+  if (!wrap) return;
+
+  try {
+    const table = await SheetsAPI.getTable(CONFIG.TABS.LEADS);
+
+    assignColumnPresent = table.headers.some((h) => String(h).trim() === ASSIGN_COL);
+    assignedByPerson = {};
+
+    table.rows.filter(isRealLead).forEach((r) => {
+      const who = String(r[ASSIGN_COL] || "").trim().toLowerCase();
+      if (!who) return;
+      if (!assignedByPerson[who]) assignedByPerson[who] = [];
+      assignedByPerson[who].push(r);
+    });
+
+    // Forget ticks for leads that were deleted or reassigned.
+    const live = new Set();
+    Object.values(assignedByPerson).forEach((list) => list.forEach((r) => live.add(leadKey(r))));
+    [...pickedForEmail].forEach((id) => {
+      if (!live.has(id)) pickedForEmail.delete(id);
+    });
+
+    renderAssignments();
+  } catch (e) {
+    console.error("Assigned leads refresh failed:", e);
+    wrap.innerHTML = '<div class="empty-state">Could not read the Leads tab.</div>';
+  }
+}
+
+function renderAssignments() {
+  const wrap = document.getElementById("assignWrap");
+  if (!wrap) return;
+
+  if (!assignColumnPresent) {
+    wrap.innerHTML =
+      '<div class="empty-state">Add an <strong>Assigned To</strong> header to row 1 of the Leads tab to start assigning leads.</div>';
+    return;
+  }
+
+  const people = Object.keys(assignedByPerson).sort();
+
+  if (people.length === 0) {
+    wrap.innerHTML =
+      '<div class="empty-state">No leads are assigned yet. Assign them from the Leads page.</div>';
+    return;
+  }
+
+  const mailReady = mailConfigured();
+
+  wrap.innerHTML = people
+    .map((person) => {
+      const leads = assignedByPerson[person];
+      const picked = leads.filter((r) => pickedForEmail.has(leadKey(r))).length;
+      const allPicked = picked === leads.length;
+      const enc = encodeURIComponent(person);
+      const status = assignStatus[person];
+
+      const rows = leads
+        .map(
+          (r) => `
+        <tr>
+          <td><input type="checkbox" class="ag-pick" data-lead="${encodeURIComponent(leadKey(r))}" ${
+            pickedForEmail.has(leadKey(r)) ? "checked" : ""
+          } /></td>
+          <td class="lead-id">${escapeHtml(r["Lead ID"])}</td>
+          <td>${escapeHtml(r["Business Name"])}</td>
+          <td>${escapeHtml(r["Industry"])}</td>
+          <td>${escapeHtml(r["Location"])}</td>
+          <td class="${priorityClass(r["Priority"])}">${escapeHtml(r["Priority"])}</td>
+        </tr>`
+        )
+        .join("");
+
+      return `
+      <div class="assign-group">
+        <div class="assign-group-head">
+          <div class="who">
+            ${avatarHtml(person)}
+            <div><strong>${escapeHtml(person)}</strong><div class="sub" style="font-size:12px;">${leads.length} lead${
+              leads.length === 1 ? "" : "s"
+            } assigned</div></div>
+          </div>
+          <label><input type="checkbox" class="ag-all" data-person="${enc}" ${allPicked ? "checked" : ""} /> Select all</label>
+          <button class="btn-primary ag-send" data-person="${enc}" ${
+            picked && mailReady ? "" : "disabled"
+          }>${picked ? `Email ${picked} selected` : "Email selected"}</button>
+        </div>
+        ${
+          status
+            ? `<div class="assign-status ${status.ok ? "ok" : "err"}">${escapeHtml(status.text)}</div>`
+            : ""
+        }
+        <div class="table-scroll"><table>
+          <thead><tr><th></th><th>Lead ID</th><th>Business</th><th>Industry</th><th>Location</th><th>Priority</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
+      </div>`;
+    })
+    .join("") +
+    (mailReady
+      ? ""
+      : '<p class="sub" style="margin-top:14px;font-size:13px;">Email is not set up: add NOTIFY_WEBHOOK_URL in config.js.</p>');
+}
+
+// Same initial-in-a-coloured-circle look as the dropdowns.
+function avatarHtml(email) {
+  const colors = ["#9C7A2E", "#3F6D4E", "#A6472A", "#4A5F8A", "#7A4E7E", "#2F7D8A"];
+  let hash = 0;
+  for (let i = 0; i < email.length; i++) hash = (hash * 31 + email.charCodeAt(i)) >>> 0;
+  const initial = (email.split("@")[0][0] || "?").toUpperCase();
+  return `<span class="dd-avatar" style="background:${colors[hash % colors.length]}">${escapeHtml(initial)}</span>`;
+}
+
+async function runNotifyAssignee(assignee, leadIds) {
+  if (!mailConfigured()) {
+    throw new Error("Notification webhook URL is not configured in config.js.");
+  }
+
+  const url =
+    CONFIG.NOTIFY_WEBHOOK_URL +
+    "?secret=" + encodeURIComponent(CONFIG.NOTIFY_WEBHOOK_SECRET || "") +
+    "&action=notifyAssignee" +
+    "&assignee=" + encodeURIComponent(assignee) +
+    "&leadIds=" + encodeURIComponent(leadIds.join(",")) +
+    "&sentBy=" + encodeURIComponent(Auth.getEmail() || "");
+
+  const response = await fetch(url);
+
+  if (!response.ok) {
+    throw new Error("Notify webhook " + response.status + ": " + (await response.text()));
+  }
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!data || data.ok !== true) {
+    throw new Error((data && data.error) || "The email could not be sent.");
+  }
+
+  return data;
+}
+
+document.addEventListener("change", (e) => {
+  const pick = e.target.closest(".ag-pick");
+  const all = e.target.closest(".ag-all");
+
+  if (pick) {
+    const id = decodeURIComponent(pick.getAttribute("data-lead"));
+    if (pick.checked) pickedForEmail.add(id);
+    else pickedForEmail.delete(id);
+    renderAssignments();
+  } else if (all) {
+    const person = decodeURIComponent(all.getAttribute("data-person"));
+    (assignedByPerson[person] || []).forEach((r) => {
+      if (all.checked) pickedForEmail.add(leadKey(r));
+      else pickedForEmail.delete(leadKey(r));
+    });
+    renderAssignments();
+  }
+});
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".ag-send");
+  if (!btn || !Auth.isOwner()) return;
+
+  const person = decodeURIComponent(btn.getAttribute("data-person"));
+  const ids = (assignedByPerson[person] || []).map(leadKey).filter((id) => pickedForEmail.has(id));
+  if (ids.length === 0) return;
+
+  if (!confirm(`Email ${ids.length} lead${ids.length === 1 ? "" : "s"} to ${person}?`)) return;
+
+  btn.disabled = true;
+  btn.textContent = "Sending…";
+
+  try {
+    await runNotifyAssignee(person, ids);
+    ids.forEach((id) => pickedForEmail.delete(id));
+    assignStatus[person] = {
+      ok: true,
+      text: `Emailed ${ids.length} lead${ids.length === 1 ? "" : "s"} to ${person}.`,
+    };
+  } catch (err) {
+    console.error("Email assignee failed:", person, err);
+    assignStatus[person] = { ok: false, text: "Not sent: " + (err.message || "unknown error") };
+  }
+
+  renderAssignments();
+});

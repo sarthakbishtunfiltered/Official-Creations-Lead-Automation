@@ -468,3 +468,251 @@ textarea:focus-visible {
     overflow-x: auto;
   }
 }
+
+/* ---------- Dropdowns ---------- */
+
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  padding-right: 34px;
+  background-color: var(--paper-raised);
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1.5l5 5 5-5' fill='none' stroke='%23454A57' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px 8px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+select:hover:not(:disabled) { border-color: var(--ink-soft); }
+
+select:focus {
+  border-color: var(--brass);
+  box-shadow: 0 0 0 3px rgba(156, 122, 46, 0.16);
+}
+
+select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+select optgroup {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brass-deep);
+}
+
+select option {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--ink);
+}
+
+/* Filters above a table stay compact instead of stretching full width. */
+.toolbar select { width: auto; min-width: 170px; }
+
+@media (max-width: 640px) {
+  .toolbar select { width: 100%; }
+}
+
+/* Wide tables (e.g. Leads with Assigned to / Email) scroll inside their
+   panel on every screen size instead of running off the page. */
+.panel:has(table) { overflow-x: auto; }
+
+/* ---------- Legal links (Privacy Policy / Terms of Service) ---------- */
+
+.legal-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 14px;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.legal-links a {
+  color: var(--ink-soft);
+  text-decoration: none;
+}
+
+.legal-links a:hover { color: var(--ink); text-decoration: underline; }
+
+.gate .legal-links { justify-content: center; margin-top: 4px; }
+
+/* ============================================================
+   Styled dropdowns (see shared.js) + general form polish
+   ============================================================ */
+
+.dd { position: relative; width: 100%; }
+.toolbar .dd { width: auto; min-width: 190px; }
+td .dd { min-width: 190px; }
+
+/* The real <select> stays in the DOM, invisible, as the source of truth. */
+.dd-native {
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  width: 1px !important;
+  height: 1px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  opacity: 0 !important;
+  overflow: hidden;
+  pointer-events: none !important;
+}
+
+select.hidden + .dd { display: none !important; }
+
+.dd-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  font-size: 14px;
+  font-weight: 400;
+  background: var(--paper-raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--ink);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.dd-btn:hover:not(:disabled) { border-color: var(--ink-soft); }
+
+.dd.open .dd-btn,
+.dd-btn:focus-visible {
+  border-color: var(--brass);
+  box-shadow: 0 0 0 3px rgba(156, 122, 46, 0.16);
+  outline: none;
+}
+
+.dd-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dd-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dd.is-empty .dd-label { color: #8b909c; }
+
+.dd-chev { flex: none; color: var(--ink-soft); transition: transform 0.15s ease; }
+.dd.open .dd-chev { transform: rotate(180deg); }
+
+.dd-avatar {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.dd-menu {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(20, 23, 31, 0.18), 0 2px 6px rgba(20, 23, 31, 0.08);
+  outline: none;
+  animation: ddIn 0.12s ease-out;
+}
+
+@keyframes ddIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.dd-search { margin: 0 0 6px; padding: 8px 10px; font-size: 13px; }
+.dd-list { overflow-y: auto; }
+
+.dd-group {
+  padding: 9px 10px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--brass-deep);
+}
+
+.dd-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 5px;
+  font-size: 13.5px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.dd-opt.active { background: rgba(156, 122, 46, 0.11); }
+.dd-opt.selected { font-weight: 500; }
+.dd-opt .dd-check { margin-left: auto; flex: none; color: var(--brass); visibility: hidden; }
+.dd-opt.selected .dd-check { visibility: visible; }
+.dd-opt.disabled { opacity: 0.45; cursor: not-allowed; }
+.dd-opt-action { color: var(--brass-deep); font-weight: 500; }
+
+.dd-empty { padding: 12px; text-align: center; font-size: 13px; color: var(--ink-soft); }
+
+/* Inputs: softer corners, clear focus ring, readable placeholders. */
+input[type=text], input[type=number], input[type=tel], textarea { border-radius: 6px; }
+
+input[type=text]:focus, input[type=number]:focus, input[type=tel]:focus, textarea:focus {
+  outline: none;
+  border-color: var(--brass);
+  box-shadow: 0 0 0 3px rgba(156, 122, 46, 0.16);
+}
+
+input::placeholder, textarea::placeholder { color: #9a9ea9; }
+
+button { transition: border-color 0.15s ease, background-color 0.15s ease; }
+
+/* Dialog cards */
+#leadModal, #actionModal, #memberModal { backdrop-filter: blur(2px); }
+
+#leadModal > div, #actionModal > div, #memberModal > div {
+  border-radius: 10px !important;
+  box-shadow: 0 24px 60px rgba(20, 23, 31, 0.28);
+}
+
+/* Team page: assigned leads, grouped by teammate */
+.assign-group {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.assign-group-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 12px 14px;
+  background: rgba(0, 0, 0, 0.02);
+  border-bottom: 1px solid var(--line);
+}
+
+.assign-group-head .who { display: flex; align-items: center; gap: 10px; margin-right: auto; min-width: 0; }
+.assign-group-head .who strong { font-weight: 500; word-break: break-all; }
+.assign-group-head .dd-avatar { width: 28px; height: 28px; font-size: 13px; }
+.assign-group-head label { display: flex; align-items: center; gap: 6px; margin: 0; cursor: pointer; }
+.assign-status { padding: 8px 14px; font-size: 12.5px; border-bottom: 1px solid var(--line); }
+.assign-status.ok { color: var(--ok); background: var(--ok-bg); }
+.assign-status.err { color: var(--warn); background: var(--warn-bg); }
+.assign-group table { margin: 0; }
