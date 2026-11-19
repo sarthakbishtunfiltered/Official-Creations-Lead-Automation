@@ -174,6 +174,10 @@ function doGet(e) {
     return jsonOut_(emailAssignee_(e.parameter));
   }
 
+  if (e && e.parameter && e.parameter.action === "sendCycle") {
+    return jsonOut_(sendCycle_(e.parameter));
+  }
+
   var result = sendPendingNotifications();
 
   return ContentService
@@ -498,4 +502,232 @@ function emailAssignee_(params) {
   });
 
   return { ok: true, emailed: leads.length, to: assignee };
+}
+
+
+// ----------------------------------------------------------------
+// Lead cycles: one Slack + one Telegram message per cycle
+//
+// Called by the dashboard (action=sendCycle&cycleId=C001).
+//   - Without force=1 it is the automatic "cycle is full" send: it only
+//     goes out when the cycle holds at least its Limit of leads AND that
+//     many leads have not already been sent (Sent Count). So two people
+//     filling a cycle at the same moment cannot send it twice.
+//   - With force=1 it is the manual "Send now" and always sends.
+//
+// Cycles tab headers: Cycle ID | Name | Number | Niche | Limit |
+//   Created By | Created At | Sent At | Sent Count
+// Leads tab needs a "Cycle" column holding the Cycle ID.
+// ----------------------------------------------------------------
+
+var CYCLES_TAB_NAME = "Cycles";
+var CYCLE_CHUNK_CHARS_ = 3500; // Telegram allows 4096 per message
+
+function headerMap_(headers) {
+  var map = {};
+  for (var i = 0; i < headers.length; i++) {
+    var k = String(headers[i]).trim().toLowerCase();
+    if (k && map[k] === undefined) map[k] = i;
+  }
+  return map;
+}
+
+function sendCycle_(params) {
+  var cycleId = String(params.cycleId || "").trim();
+  var force = String(params.force || "") === "1";
+
+  if (!cycleId) return { ok: false, error: "Missing cycleId." };
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) {
+    return { ok: false, error: "Another send is in progress. Try again in a moment." };
+  }
+
+  try {
+    return sendCycleLocked_(cycleId, force);
+  } catch (exc) {
+    Logger.log("sendCycle error: " + exc);
+    return { ok: false, error: "Cycle send failed: " + exc };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function sendCycleLocked_(cycleId, force) {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var cyclesSheet = spreadsheet.getSheetByName(CYCLES_TAB_NAME);
+  var leadsSheet = spreadsheet.getSheetByName(LEADS_TAB_NAME);
+
+  if (!cyclesSheet) return { ok: false, error: 'No "' + CYCLES_TAB_NAME + '" tab found.' };
+  if (!leadsSheet) return { ok: false, error: 'No "' + LEADS_TAB_NAME + '" tab found.' };
+
+  var cv = cyclesSheet.getDataRange().getValues();
+  var lv = leadsSheet.getDataRange().getValues();
+  if (cv.length < 2) return { ok: false, error: "The Cycles tab has no cycles." };
+
+  var ch = headerMap_(cv[0]);
+  var lh = headerMap_(lv[0] || []);
+
+  if (ch["cycle id"] === undefined) return { ok: false, error: 'Cycles tab needs a "Cycle ID" header.' };
+  if (lh["cycle"] === undefined) return { ok: false, error: 'Leads tab needs a "Cycle" header.' };
+
+  var cycleRow = -1;
+  for (var i = 1; i < cv.length; i++) {
+    if (String(cv[i][ch["cycle id"]]).trim().toLowerCase() === cycleId.toLowerCase()) {
+      cycleRow = i;
+      break;
+    }
+  }
+  if (cycleRow === -1) return { ok: false, error: "Cycle " + cycleId + " was not found." };
+
+  var cget = function (name) {
+    var idx = ch[name];
+    return idx === undefined ? "" : cv[cycleRow][idx];
+  };
+  var name = String(cget("name") || cycleId);
+  var number = String(cget("number"));
+  var niche = String(cget("niche"));
+  var limit = Number(cget("limit")) || 0;
+
+  var leads = [];
+  for (var r = 1; r < lv.length; r++) {
+    var row = lv[r];
+    var inCycle = String(row[lh["cycle"]]).trim().toLowerCase() === cycleId.toLowerCase();
+    var hasId =
+      (lh["lead id"] !== undefined && String(row[lh["lead id"]]).trim() !== "") ||
+      (lh["business name"] !== undefined && String(row[lh["business name"]]).trim() !== "");
+    if (inCycle && hasId) leads.push(row);
+  }
+
+  if (leads.length === 0) return { ok: false, error: "This cycle has no leads yet." };
+
+  if (!force) {
+    var sentCount = ch["sent count"] !== undefined ? Number(cget("sent count")) || 0 : null;
+    var alreadySent =
+      sentCount !== null ? sentCount >= limit : String(cget("sent at")).trim() !== "";
+
+    if (!limit || leads.length < limit) {
+      return { ok: true, skipped: true, reason: "Cycle is not full yet." };
+    }
+    if (alreadySent) {
+      return { ok: true, skipped: true, reason: "Cycle was already sent at this size." };
+    }
+  }
+
+  var lget = function (row, col) {
+    var idx = lh[col];
+    return idx === undefined ? "" : String(row[idx]).trim();
+  };
+
+  var title = "Lead cycle: " + name + (number ? " (No. " + number + ")" : "");
+  var head =
+    title + "\n" +
+    "Niche: " + (niche || "—") + "\n" +
+    "Leads: " + leads.length + (limit ? " of " + limit : "") + "\n";
+
+  var lines = leads.map(function (row, i) {
+    var contact = lget(row, "phone") || lget(row, "instagram id") || "—";
+    var parts = [
+      (i + 1) + ". " + (lget(row, "business name") || "—"),
+      lget(row, "location") || "—",
+      contact,
+    ];
+    var pr = lget(row, "priority");
+    var sc = lget(row, "score");
+    if (pr || sc) parts.push((pr || "—") + (sc ? " (" + sc + ")" : ""));
+    var as = lget(row, "assigned to");
+    if (as) parts.push(as);
+    return parts.join(" | ");
+  });
+
+  var chunks = [];
+  var current = head;
+  for (var n = 0; n < lines.length; n++) {
+    if (current.length + lines[n].length + 1 > CYCLE_CHUNK_CHARS_ && current.length > 0) {
+      chunks.push(current);
+      current = title + " (continued)\n";
+    }
+    current += lines[n].substring(0, 600) + "\n";
+  }
+  chunks.push(current);
+
+  var slackOk = true;
+  var telegramOk = true;
+  chunks.forEach(function (text) {
+    if (!postSlackText_(text)) slackOk = false;
+    if (!postTelegramText_(text)) telegramOk = false;
+  });
+
+  if (!slackOk && !telegramOk) {
+    return {
+      ok: false,
+      error: "Neither Slack nor Telegram accepted the message. Check the Script Properties and the Executions log.",
+    };
+  }
+
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm");
+  if (ch["sent at"] !== undefined) cyclesSheet.getRange(cycleRow + 1, ch["sent at"] + 1).setValue(stamp);
+  if (ch["sent count"] !== undefined) cyclesSheet.getRange(cycleRow + 1, ch["sent count"] + 1).setValue(leads.length);
+
+  return {
+    ok: true,
+    sent: leads.length,
+    slack: slackOk,
+    telegram: telegramOk,
+    messages: chunks.length,
+    sentAt: stamp,
+  };
+}
+
+function postSlackText_(text) {
+  var props = PropertiesService.getScriptProperties();
+  var token = props.getProperty("SLACK_BOT_TOKEN");
+  var channel = props.getProperty("SLACK_CHANNEL_ID");
+
+  if (!token || !channel) {
+    Logger.log("Slack configuration missing in Script Properties.");
+    return false;
+  }
+
+  try {
+    var response = UrlFetchApp.fetch("https://slack.com/api/chat.postMessage", {
+      method: "post",
+      contentType: "application/json",
+      headers: { Authorization: "Bearer " + token },
+      payload: JSON.stringify({ channel: channel, text: text }),
+      muteHttpExceptions: true,
+    });
+    var data = JSON.parse(response.getContentText());
+    if (!data.ok) Logger.log("Slack send failed: " + response.getContentText());
+    return data.ok === true;
+  } catch (exc) {
+    Logger.log("Slack send error: " + exc);
+    return false;
+  }
+}
+
+function postTelegramText_(text) {
+  var props = PropertiesService.getScriptProperties();
+  var token = props.getProperty("TELEGRAM_BOT_TOKEN");
+  var chatId = props.getProperty("TELEGRAM_CHAT_ID");
+
+  if (!token || !chatId) {
+    Logger.log("Telegram configuration missing in Script Properties.");
+    return false;
+  }
+
+  try {
+    var response = UrlFetchApp.fetch("https://api.telegram.org/bot" + token + "/sendMessage", {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify({ chat_id: chatId, text: text }),
+      muteHttpExceptions: true,
+    });
+    var data = JSON.parse(response.getContentText());
+    if (!data.ok) Logger.log("Telegram send failed: " + response.getContentText());
+    return data.ok === true;
+  } catch (exc) {
+    Logger.log("Telegram send error: " + exc);
+    return false;
+  }
 }

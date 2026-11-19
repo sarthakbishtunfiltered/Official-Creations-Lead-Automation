@@ -29,6 +29,9 @@ const CONFIG = {
     // Approvals tab: Request ID | Lead ID | Business Name | Action | Reason |
     //                Requested By | Requested At | Status | Decided By | Decided At
     APPROVALS: "Approval Requests",
+      DEFAULT_CYCLE_LIMIT: 20,
+  RECORDINGS_FOLDER_ID: "",
+   CYCLES: "Cycles",
   },
 
   // How often the site re-reads the sheet, in milliseconds.

@@ -30,11 +30,17 @@ Auth.requireSession(() => {
         <h1>Leads</h1>
         <div class="sub">Full lead database, synced live with Google Sheets</div>
       </div>
+      <div class="head-actions">
       ${isEditor ? '<button class="btn-primary" id="addLeadBtn">+ Add lead manually</button> <button class="btn-quiet" id="cleanupBtn">Clean up blank rows</button>' + (Auth.canApprove() ? ' <button class="btn-quiet" id="removeUnapprovedBtn" style="color:var(--warn);">Remove unapproved leads</button>' : "") + (notifyConfigured ? ' <button class="btn-quiet" id="sendNotifyBtn">Send notifications now</button>' : "") : ""}
+      ${Auth.canApprove() ? '<button class="btn-quiet" id="manageCyclesBtn">Manage cycles</button>' : ""}
+      </div>
       </div>
     </div>
 
     <div class="panel">
+      <div class="pipe-tabs" id="pipeTabs"></div>
+      <div class="pipe-warn hidden" id="pipeWarn"></div>
+      <div class="pipe-notice hidden" id="pipeNotice"></div>
       <div class="toolbar">
         <input type="text" id="searchInput" placeholder="Search business, industry, location…" />
         <select id="statusFilter">
@@ -43,6 +49,8 @@ Auth.requireSession(() => {
           <option value="pending">Pending review</option>
         </select>
         <select id="assigneeFilter" class="hidden" data-avatar="1"></select>
+        <select id="cycleFilter" class="hidden"></select>
+        <button class="btn-primary hidden" id="bulkCycleBtn"></button>
       </div>
       <div id="leadsTableWrap">Loading…</div>
     </div>
@@ -105,6 +113,19 @@ Auth.requireSession(() => {
   document.getElementById("searchInput").addEventListener("input", renderTable);
   document.getElementById("statusFilter").addEventListener("change", renderTable);
   document.getElementById("assigneeFilter").addEventListener("change", renderTable);
+  document.getElementById("cycleFilter").addEventListener("change", renderTable);
+  document.getElementById("bulkCycleBtn").addEventListener("click", () => Pipeline.openBulkModal());
+
+  const manageBtn = document.getElementById("manageCyclesBtn");
+  if (manageBtn) manageBtn.addEventListener("click", () => Pipeline.openCyclesModal().then(refresh));
+
+  document.getElementById("pipeTabs").addEventListener("click", (e) => {
+    const tab = e.target.closest("[data-tab]");
+    if (!tab) return;
+    Pipeline.setTab(tab.getAttribute("data-tab"));
+    Pipeline.renderTabs();
+    renderTable();
+  });
 
   startPolling(refresh, CONFIG.POLL_INTERVAL_MS);
 });
@@ -114,12 +135,15 @@ async function refresh() {
     const [table, people] = await Promise.all([
       SheetsAPI.getTable(CONFIG.TABS.LEADS),
       loadAssignableTeam(),
+      Pipeline.loadCycles(),
     ]);
     teamMembers = people;
     leadHeaders = table.headers;
     allLeadRows = table.rows.filter(isRealLead).sort((a, b) => b.__rowIndex - a.__rowIndex);
 
     renderAssigneeFilter();
+    Pipeline.renderTabs();
+    Pipeline.renderCycleFilter();
     renderTable();
   } catch (e) {
     console.error("Leads refresh failed:", e);
@@ -135,6 +159,7 @@ function renderTable() {
   const canAssign = hasAssignCol && Auth.canApprove();
 
   const rows = allLeadRows.filter((r) => {
+    if (!Pipeline.matches(r)) return false;
     const haystack = (r["Business Name"] + " " + r["Industry"] + " " + r["Location"]).toLowerCase();
     if (search && !haystack.includes(search)) return false;
     if (statusFilter === "approved" && !truthy(r["Approve"])) return false;
@@ -151,6 +176,7 @@ function renderTable() {
   if (rows.length === 0) {
     document.getElementById("leadsTableWrap").innerHTML =
       '<div class="empty-state">No leads match this view.</div>';
+    Pipeline.afterRender([]);
     return;
   }
 
@@ -161,6 +187,7 @@ function renderTable() {
       const checked = truthy(r["Approve"]) ? "checked" : "";
       return `
       <tr>
+        ${Pipeline.selectCell(r)}
         <td>
           <input type="checkbox" data-row="${r.__rowIndex}" class="approveBox" ${checked}
             ${isEditor ? "" : "disabled"} />
@@ -175,6 +202,7 @@ function renderTable() {
         <td class="${priorityClass(r["Priority"])}">${escapeHtml(r["Priority"])}</td>
                 <td>${escapeHtml(r["Status"])}</td>
         ${assignCellHtml(r, hasAssignCol, canAssign)}
+        ${Pipeline.rowCells(r, isEditor)}
         ${isEditor ? `<td style="white-space:nowrap;">
           <button class="btn-quiet" data-lead-action="edit" data-row="${r.__rowIndex}" style="padding:4px 8px;">Edit</button>
           <button class="btn-quiet" data-lead-action="blacklist" data-row="${r.__rowIndex}" style="padding:4px 8px;">Blacklist</button>
@@ -188,9 +216,9 @@ function renderTable() {
     <table>
       <thead>
         <tr>
-          <th>Keep</th><th>Lead ID</th><th>Business</th><th>Industry</th>
+          ${Pipeline.selectHead()}<th>Keep</th><th>Lead ID</th><th>Business</th><th>Industry</th>
           <th>Location</th><th>Phone</th><th>Source</th><th>Score</th>
-                    <th>Priority</th><th>Status</th>${hasAssignCol ? "<th>Assigned to</th>" : ""}${isEditor ? "<th></th>" : ""}
+                    <th>Priority</th><th>Status</th>${hasAssignCol ? "<th>Assigned to</th>" : ""}${Pipeline.headCells(isEditor)}${isEditor ? "<th></th>" : ""}
         </tr>
       </thead>
       <tbody>${rowsHtml}</tbody>
@@ -198,6 +226,7 @@ function renderTable() {
   `;
 
   attachAssignmentHandlers();
+  Pipeline.afterRender(rows);
 
   if (isEditor) {
     document.querySelectorAll(".approveBox").forEach((box) => {
@@ -278,7 +307,7 @@ function openLeadModal(existingLead) {
           : "Saved straight to the Leads sheet as a qualified lead."}
         Provide a phone number or an Instagram ID.
       </p>
-      ${fieldsHtml}${assignFieldHtml(existingLead)}
+      ${fieldsHtml}${assignFieldHtml(existingLead)}${Pipeline.cycleFieldHtml(existingLead)}
       <div id="leadFormError" style="color:var(--warn);font-size:13px;min-height:18px;margin-bottom:8px;"></div>
       <div style="display:flex;gap:8px;">
         <button class="btn-primary" id="saveLeadBtn">${isEdit ? "Save changes" : "Save lead"}</button>
@@ -328,6 +357,7 @@ function openLeadModal(existingLead) {
 
   const assignEl = document.getElementById("f_assign");
   if (isEdit && assignEl) assignEl.value = normEmail(existingLead[ASSIGN_COL]);
+  if (isEdit) Pipeline.setCycleField(existingLead);
 
   syncDropdowns();
 
@@ -371,12 +401,15 @@ async function saveManualLead() {
       leadHeaders = table.headers;
     }
 
+    // Checks the chosen cycle's niche and free slots (and may fill an empty industry).
+    const cyc = await Pipeline.resolveCycle(Pipeline.cycleValue() || "", industryValue(), null);
+
     const leadId = await nextLeadId();
 
     const valuesByHeader = {
       "Lead ID": leadId,
       "Business Name": business,
-      "Industry": industryValue(),
+      "Industry": cyc.industry,
       "Location": location,
       "Phone": phone,
       "Instagram ID": instagram,
@@ -386,18 +419,31 @@ async function saveManualLead() {
       "Approve": "TRUE",
       "Status": "Active",
       "Created At": new Date().toISOString(),
+      "Stage": "Round 1",
+      "Cycle": cyc.cycleId,
     };
 
-    const row = leadHeaders.map((h) =>
-      Object.prototype.hasOwnProperty.call(valuesByHeader, h) ? valuesByHeader[h] : ""
-    );
+    // Header names are matched ignoring case and stray spaces.
+    const byLower = {};
+    Object.entries(valuesByHeader).forEach(([k, v]) => (byLower[k.toLowerCase()] = v));
+
+    const row = leadHeaders.map((h) => {
+      const k = String(h).trim().toLowerCase();
+      return Object.prototype.hasOwnProperty.call(byLower, k) ? byLower[k] : "";
+    });
 
     await SheetsAPI.appendRow(CONFIG.TABS.LEADS, row);
     closeLeadModal();
     await refresh();
+    Pipeline.afterCycleAdded(cyc.cycleId);
   } catch (e) {
     console.error("Save lead failed:", e);
-    errorBox.textContent = "Could not save the lead. Check the browser console for details.";
+    // Our own validation messages (cycle full / wrong niche) are readable;
+    // raw API errors are not, so those stay generic.
+    errorBox.textContent =
+      e.message && !/^Sheets API|^Failed to fetch/.test(e.message)
+        ? e.message
+        : "Could not save the lead. Check the browser console for details.";
     btn.disabled = false;
     btn.textContent = "Save lead";
   }
@@ -448,21 +494,32 @@ async function saveEditedLead(existingLead) {
       leadHeaders = table.headers;
     }
 
+    // Only Owner/approvers see the Cycle field; others leave Cycle alone.
+    const chosenCycle = Pipeline.cycleValue();
+    const cyc = chosenCycle === null
+      ? { cycleId: null, industry: industryValue() }
+      : await Pipeline.resolveCycle(chosenCycle, industryValue(), existingLead);
+
     const valuesByHeader = {
       "Business Name": business,
-      "Industry": industryValue(),
+      "Industry": cyc.industry,
       "Location": location,
       "Phone": phone,
       "Instagram ID": instagram,
       "Opportunity": opportunity,
     };
 
+    if (cyc.cycleId !== null) valuesByHeader["Cycle"] = cyc.cycleId;
+
     // Only Owner/approvers see the Assign field; others leave it alone.
     if (assignValue() !== null) valuesByHeader[ASSIGN_COL] = assignValue();
 
     const updates = Object.entries(valuesByHeader)
       .map(([col, value]) => {
-        const colLetter = SheetsAPI.colLetter(leadHeaders, col);
+        const actual = leadHeaders.find(
+          (h) => String(h).trim().toLowerCase() === col.toLowerCase()
+        );
+        const colLetter = actual ? SheetsAPI.colLetter(leadHeaders, actual) : null;
         if (!colLetter) return null;
         return SheetsAPI.updateCell(
           CONFIG.TABS.LEADS + "!" + colLetter + row.__rowIndex,
@@ -473,8 +530,10 @@ async function saveEditedLead(existingLead) {
 
     await Promise.all(updates);
 
+    const prevCycle = String(existingLead["Cycle"] || "").trim().toLowerCase();
     closeLeadModal();
     await refresh();
+    if (cyc.cycleId && cyc.cycleId.toLowerCase() !== prevCycle) Pipeline.afterCycleAdded(cyc.cycleId);
   } catch (e) {
     console.error("Save lead edit failed:", e);
     errorBox.textContent = e.message || "Could not save changes. Check the browser console for details.";

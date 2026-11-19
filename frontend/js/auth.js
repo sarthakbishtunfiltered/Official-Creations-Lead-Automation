@@ -12,6 +12,10 @@ const Auth = (() => {
     "email",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.metadata.readonly",
+    // Only asked for when call-recording upload is switched on in config.js.
+    ...(typeof CONFIG !== "undefined" && String(CONFIG.RECORDINGS_FOLDER_ID || "").trim()
+      ? ["https://www.googleapis.com/auth/drive.file"]
+      : []),
   ].join(" ");
 
   const LOGIN_URL = "/index.html";
