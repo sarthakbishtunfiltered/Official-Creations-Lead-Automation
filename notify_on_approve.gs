@@ -178,6 +178,10 @@ function doGet(e) {
     return jsonOut_(sendCycle_(e.parameter));
   }
 
+  if (e && e.parameter && e.parameter.action === "notifyStage") {
+    return jsonOut_(notifyStage_(e.parameter));
+  }
+
   var result = sendPendingNotifications();
 
   return ContentService
@@ -679,10 +683,10 @@ function sendCycleLocked_(cycleId, force) {
   };
 }
 
-function postSlackText_(text) {
+function postSlackText_(text, channelOverride) {
   var props = PropertiesService.getScriptProperties();
   var token = props.getProperty("SLACK_BOT_TOKEN");
-  var channel = props.getProperty("SLACK_CHANNEL_ID");
+  var channel = channelOverride || props.getProperty("SLACK_CHANNEL_ID");
 
   if (!token || !channel) {
     Logger.log("Slack configuration missing in Script Properties.");
@@ -706,10 +710,10 @@ function postSlackText_(text) {
   }
 }
 
-function postTelegramText_(text) {
+function postTelegramText_(text, chatOverride) {
   var props = PropertiesService.getScriptProperties();
   var token = props.getProperty("TELEGRAM_BOT_TOKEN");
-  var chatId = props.getProperty("TELEGRAM_CHAT_ID");
+  var chatId = chatOverride || props.getProperty("TELEGRAM_CHAT_ID");
 
   if (!token || !chatId) {
     Logger.log("Telegram configuration missing in Script Properties.");
@@ -730,4 +734,131 @@ function postTelegramText_(text) {
     Logger.log("Telegram send error: " + exc);
     return false;
   }
+}
+
+
+// ----------------------------------------------------------------
+// One Slack channel + Telegram chat per pipeline stage
+//
+// Called by the dashboard right after a lead is moved
+// (action=notifyStage&leadId=LEAD-0001&stage=Round 2).
+//
+// Script Properties (each optional; a stage with none set is skipped):
+//   Round 1           SLACK_CHANNEL_ID           TELEGRAM_CHAT_ID   (your existing ones)
+//   Round 2           SLACK_CHANNEL_ROUND2       TELEGRAM_CHAT_ROUND2
+//   Round 3           SLACK_CHANNEL_ROUND3       TELEGRAM_CHAT_ROUND3
+//   Call Rejected     SLACK_CHANNEL_REJECTED     TELEGRAM_CHAT_REJECTED
+//   Existing Client   SLACK_CHANNEL_CLIENTS      TELEGRAM_CHAT_CLIENTS
+//   Round 2 Rejected  SLACK_CHANNEL_ROUND2_REJECTED  TELEGRAM_CHAT_ROUND2_REJECTED
+// The same bot tokens are used for all of them; add the Slack bot to each
+// channel and the Telegram bot to each chat/channel.
+//
+// The message is built from the Leads sheet, not from the request, and
+// only goes out if the lead really is in that stage right now.
+// Cycle messages (sendCycle) go to the Round 1 channel.
+// ----------------------------------------------------------------
+
+var STAGE_PROPS_ = {
+  "round 1": { label: "Round 1", slack: "SLACK_CHANNEL_ID", telegram: "TELEGRAM_CHAT_ID" },
+  "round 2": { label: "Round 2", slack: "SLACK_CHANNEL_ROUND2", telegram: "TELEGRAM_CHAT_ROUND2" },
+  "round 3": { label: "Round 3", slack: "SLACK_CHANNEL_ROUND3", telegram: "TELEGRAM_CHAT_ROUND3" },
+  "call rejected": { label: "Call Rejected", slack: "SLACK_CHANNEL_REJECTED", telegram: "TELEGRAM_CHAT_REJECTED" },
+  "existing client": { label: "Existing Client", slack: "SLACK_CHANNEL_CLIENTS", telegram: "TELEGRAM_CHAT_CLIENTS" },
+  "round 2 rejected": { label: "Round 2 Rejected", slack: "SLACK_CHANNEL_ROUND2_REJECTED", telegram: "TELEGRAM_CHAT_ROUND2_REJECTED" },
+};
+
+function notifyStage_(params) {
+  var leadId = String(params.leadId || "").trim();
+  var stageKey = String(params.stage || "").trim().toLowerCase();
+  var cfg = STAGE_PROPS_[stageKey];
+
+  if (!leadId) return { ok: false, error: "Missing leadId." };
+  if (!cfg) return { ok: false, error: "Unknown stage: " + params.stage };
+
+  var props = PropertiesService.getScriptProperties();
+  var slackChannel = props.getProperty(cfg.slack);
+  var telegramChat = props.getProperty(cfg.telegram);
+
+  if (!slackChannel && !telegramChat) {
+    return { ok: true, skipped: true, reason: "No Slack channel or Telegram chat is set for " + cfg.label + "." };
+  }
+
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var leadsSheet = spreadsheet.getSheetByName(LEADS_TAB_NAME);
+  if (!leadsSheet) return { ok: false, error: 'No "' + LEADS_TAB_NAME + '" tab found.' };
+
+  var lv = leadsSheet.getDataRange().getValues();
+  var lh = headerMap_(lv[0] || []);
+  if (lh["lead id"] === undefined) return { ok: false, error: 'Leads tab needs a "Lead ID" header.' };
+
+  var row = null;
+  for (var r = 1; r < lv.length; r++) {
+    if (String(lv[r][lh["lead id"]]).trim() === leadId) {
+      row = lv[r];
+      break;
+    }
+  }
+  if (!row) return { ok: false, error: "Lead " + leadId + " was not found." };
+
+  var get = function (col) {
+    var idx = lh[col];
+    return idx === undefined ? "" : String(row[idx]).trim();
+  };
+
+  var currentStage = (get("stage") || "Round 1").toLowerCase();
+  if (currentStage !== stageKey) {
+    return { ok: true, skipped: true, reason: "Lead is no longer in " + cfg.label + "." };
+  }
+
+  var cycleText = "";
+  var cycleId = get("cycle");
+  if (cycleId) {
+    cycleText = cycleId;
+    try {
+      var cs = spreadsheet.getSheetByName(CYCLES_TAB_NAME);
+      if (cs) {
+        var cv = cs.getDataRange().getValues();
+        var ch = headerMap_(cv[0] || []);
+        for (var i = 1; i < cv.length; i++) {
+          if (String(cv[i][ch["cycle id"]]).trim().toLowerCase() === cycleId.toLowerCase()) {
+            var nm = String(cv[i][ch["name"]] || "").trim();
+            var no = ch["number"] !== undefined ? String(cv[i][ch["number"]]).trim() : "";
+            cycleText = (nm || cycleId) + (no ? " (No. " + no + ")" : "");
+            break;
+          }
+        }
+      }
+    } catch (exc) {
+      Logger.log("Cycle lookup failed: " + exc);
+    }
+  }
+
+  var resend = String(params.resend || "") === "1";
+  var lines = [
+    cfg.label + (resend ? " - lead (sent again)" : " - lead moved"),
+    (get("business name") || "—") + " (" + leadId + ")",
+    "Industry: " + (get("industry") || "—") + " | Location: " + (get("location") || "—"),
+    "Phone: " + (get("phone") || "—") + (get("instagram id") ? " | Instagram: " + get("instagram id") : ""),
+  ];
+  if (get("assigned to")) lines.push("Assigned to: " + get("assigned to"));
+  if (cycleText) lines.push("Cycle: " + cycleText);
+  if (get("stage note")) lines.push("Note: " + get("stage note"));
+  if (get("stage updated by") || get("stage updated at")) {
+    lines.push("By: " + (get("stage updated by") || "—") + (get("stage updated at") ? " at " + get("stage updated at") : ""));
+  }
+  if (get("recording")) lines.push("Recording: " + get("recording"));
+
+  var text = lines.join("\n");
+
+  var slackOk = slackChannel ? postSlackText_(text, slackChannel) : null;
+  var telegramOk = telegramChat ? postTelegramText_(text, telegramChat) : null;
+
+  if (slackOk !== true && telegramOk !== true) {
+    return {
+      ok: false,
+      error: "Neither Slack nor Telegram accepted the " + cfg.label + " message. Check the Script Properties, that the bots are in that channel/chat, and the Executions log.",
+    };
+  }
+
+  return { ok: true, slack: slackOk, telegram: telegramOk, stage: cfg.label };
 }

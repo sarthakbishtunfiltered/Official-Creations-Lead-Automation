@@ -75,6 +75,7 @@ const Pipeline = (() => {
   let cyclesProblem = ""; // why it is not OK, shown in Manage cycles
   let historyOff = false; // Stage History tab missing -> stop trying
   const selected = new Set();
+  let lastVisible = [];
 
   // ----------------------------------------------------------
   // small helpers
@@ -293,7 +294,12 @@ const Pipeline = (() => {
       ? 'Add a "Stage" column to the Leads sheet first.'
       : "Only the assignee, the Owner or an approver can move this lead.";
 
-    return moves
+    const notifyBtn =
+      stageOf(r) !== R1 && allowed && CONFIG.NOTIFY_WEBHOOK_URL
+        ? `<button type="button" class="btn-quiet mv-btn" data-notify-row="${r.__rowIndex}" title="Post this lead to the ${escapeHtml(stageOf(r))} channel again">Notify</button>`
+        : "";
+
+    return notifyBtn + moves
       .map((m) => {
         const attrs = `data-move-to="${escapeHtml(m.to)}" data-row="${r.__rowIndex}" ${
           allowed ? "" : `disabled title="${escapeHtml(why)}"`
@@ -335,6 +341,7 @@ const Pipeline = (() => {
 
   // Called by leads.js after the table HTML is in the page.
   function afterRender(visibleRows) {
+    lastVisible = visibleRows || [];
     const selAll = document.getElementById("selAllBox");
     const boxes = [...document.querySelectorAll(".selBox")];
 
@@ -380,6 +387,18 @@ const Pipeline = (() => {
     const n = selected.size;
     btn.classList.toggle("hidden", !(showSelectColumn() && n > 0));
     btn.textContent = `Add ${n} selected to a cycle`;
+
+    const nb = document.getElementById("notifyStageBtn");
+    if (nb) {
+      const show =
+        Auth.canApprove() &&
+        CONFIG.NOTIFY_WEBHOOK_URL &&
+        activeTab !== "all" &&
+        activeTab !== R1 &&
+        lastVisible.length > 0;
+      nb.classList.toggle("hidden", !show);
+      nb.textContent = `Notify ${activeTab} channel (${lastVisible.length})`;
+    }
   }
 
   // ----------------------------------------------------------
@@ -525,6 +544,88 @@ const Pipeline = (() => {
 
     await logHistory({ at, leadId: id, business: name, from, to: move.to, note, by, recording: recording || "" });
     await refresh();
+
+    // Post to this stage's own Slack channel / Telegram chat. Best effort:
+    // the move itself is already saved, so a failure only shows a notice.
+    announceStage(id, name, move.to);
+  }
+
+  // Asks Apps Script to post one lead to its stage's channel/chat.
+  async function postStage(leadId, stage, resend) {
+    if (!CONFIG.NOTIFY_WEBHOOK_URL || !CONFIG.NOTIFY_WEBHOOK_URL.trim()) {
+      throw new Error("The notification webhook URL is not set in config.js.");
+    }
+    const url =
+      CONFIG.NOTIFY_WEBHOOK_URL +
+      "?secret=" + encodeURIComponent(CONFIG.NOTIFY_WEBHOOK_SECRET || "") +
+      "&action=notifyStage&leadId=" + encodeURIComponent(leadId) +
+      "&stage=" + encodeURIComponent(stage) +
+      (resend ? "&resend=1" : "");
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error("Webhook " + resp.status);
+    const data = await resp.json().catch(() => ({}));
+    if (data && data.ok === false) throw new Error(data.error || "The webhook reported an error.");
+    return data;
+  }
+
+  // Manual notify: one lead (row button) or every lead shown in this tab.
+  async function notifyLeads(leads, stage) {
+    let sent = 0;
+    let failed = 0;
+    let firstError = "";
+
+    for (let i = 0; i < leads.length; i++) {
+      notice(`Sending ${i + 1} of ${leads.length} to the ${stage} channel…`, false);
+      try {
+        const data = await postStage(String(leads[i]["Lead ID"]).trim(), stage, true);
+        if (data.skipped) {
+          notice(
+            data.reason ||
+              `No Slack channel or Telegram chat is set for ${stage}. Add its Script Properties in Apps Script.`,
+            true
+          );
+          return;
+        }
+        sent++;
+      } catch (e) {
+        failed++;
+        if (!firstError) firstError = e.message || "error";
+      }
+    }
+
+    if (failed) {
+      notice(`Sent ${sent}, failed ${failed} (${firstError}).`, true);
+    } else {
+      notice(`Sent ${sent} lead${sent === 1 ? "" : "s"} to the ${stage} channel.`, false);
+    }
+  }
+
+  const MAX_NOTIFY_BATCH = 25;
+
+  async function notifyCurrentStage() {
+    if (activeTab === "all" || activeTab === R1) return;
+    const leads = lastVisible.slice();
+    if (leads.length === 0) return;
+    if (leads.length > MAX_NOTIFY_BATCH) {
+      notice(`That is ${leads.length} leads. Narrow the list (search or cycle filter) to ${MAX_NOTIFY_BATCH} or fewer first.`, true);
+      return;
+    }
+    if (!confirm(`Send ${leads.length} message${leads.length === 1 ? "" : "s"} to the ${activeTab} Slack channel and Telegram chat?`)) return;
+    await notifyLeads(leads, activeTab);
+  }
+
+  async function announceStage(leadId, name, stage) {
+    try {
+      const data = await postStage(leadId, stage, false);
+      if (data && data.skipped) return; // no channel set for this stage
+      notice(name + ": posted to the " + stage + " channel.", false);
+    } catch (e) {
+      console.error("Stage notification failed:", e);
+      notice(
+        name + " was moved to " + stage + ", but the Slack/Telegram message failed (" + (e.message || "error") + ").",
+        true
+      );
+    }
   }
 
   function closeMoveModal() {
@@ -665,6 +766,13 @@ const Pipeline = (() => {
 
   document.addEventListener("change", onMoveControl);
   document.addEventListener("click", onMoveControl);
+
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest && e.target.closest("[data-notify-row]");
+    if (!b || b.disabled) return;
+    const lead = allLeadRows.find((r) => r.__rowIndex === Number(b.getAttribute("data-notify-row")));
+    if (lead) notifyLeads([lead], stageOf(lead));
+  });
 
   // ----------------------------------------------------------
   // Cycles: webhook, rules, forms
@@ -1150,6 +1258,7 @@ const Pipeline = (() => {
     afterRender,
     openBulkModal,
     openCyclesModal,
+    notifyCurrentStage,
     // forms
     cycleFieldHtml,
     cycleValue,

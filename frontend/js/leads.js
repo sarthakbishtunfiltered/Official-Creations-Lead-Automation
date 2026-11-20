@@ -51,6 +51,7 @@ Auth.requireSession(() => {
         <select id="assigneeFilter" class="hidden" data-avatar="1"></select>
         <select id="cycleFilter" class="hidden"></select>
         <button class="btn-primary hidden" id="bulkCycleBtn"></button>
+        <button class="btn-quiet hidden" id="notifyStageBtn"></button>
       </div>
       <div id="leadsTableWrap">Loading…</div>
     </div>
@@ -115,6 +116,7 @@ Auth.requireSession(() => {
   document.getElementById("assigneeFilter").addEventListener("change", renderTable);
   document.getElementById("cycleFilter").addEventListener("change", renderTable);
   document.getElementById("bulkCycleBtn").addEventListener("click", () => Pipeline.openBulkModal());
+  document.getElementById("notifyStageBtn").addEventListener("click", () => Pipeline.notifyCurrentStage());
 
   const manageBtn = document.getElementById("manageCyclesBtn");
   if (manageBtn) manageBtn.addEventListener("click", () => Pipeline.openCyclesModal().then(refresh));
