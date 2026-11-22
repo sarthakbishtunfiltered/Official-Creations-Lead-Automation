@@ -594,29 +594,36 @@ const Pipeline = (() => {
     return data;
   }
 
-  // Manual notify: one lead (row button) or every not-yet-notified lead in
-  // this tab. resend=true sends again even if it was already sent.
-  async function notifyLeads(leads, stage, resend) {
+  // Sends the given leads to their stage channels. `stage` is fixed on a
+  // stage tab; on the All tab it is null and each lead uses its own stage.
+  // `prefix` is text to put first in the result line (the Round 1 result).
+  async function notifyLeads(leads, stage, resend, prefix, remaining) {
     let sent = 0;
     let already = 0;
     let failed = 0;
     let firstError = "";
+    const noChannel = new Set();
 
     for (let i = 0; i < leads.length; i++) {
-      notice(`Sending ${i + 1} of ${leads.length} to the ${stage} channel…`, false);
+      const st = stage || stageOf(leads[i]);
+      notice(`Sending ${i + 1} of ${leads.length} (${st})…`, false);
       try {
-        const data = await postStage(String(leads[i]["Lead ID"]).trim(), stage, !!resend);
+        const data = await postStage(String(leads[i]["Lead ID"]).trim(), st, !!resend);
         if (data.already) {
           already++;
           continue;
         }
         if (data.skipped) {
-          notice(
-            data.reason ||
-              `No Slack channel or Telegram chat is set for ${stage}. Add its Script Properties in Apps Script.`,
-            true
-          );
-          return;
+          if (stage) {
+            notice(
+              data.reason ||
+                `No Slack channel or Telegram chat is set for ${st}. Add its Script Properties in Apps Script.`,
+              true
+            );
+            return;
+          }
+          noChannel.add(st);
+          continue;
         }
         sent++;
       } catch (e) {
@@ -625,45 +632,76 @@ const Pipeline = (() => {
       }
     }
 
-    const parts = [`Sent ${sent}`];
+    const parts = (prefix || []).slice();
+    parts.push(`Sent ${sent}`);
     if (already) parts.push(`${already} already sent (skipped)`);
+    if (noChannel.size) parts.push(`no channel set for ${[...noChannel].join(", ")}`);
     if (failed) parts.push(`${failed} failed (${firstError})`);
-    notice(parts.join(", ") + ".", failed > 0);
+    if (remaining) parts.push(`${remaining} more not sent yet, click the button again`);
+    notice(parts.join(" · ") + ".", failed > 0 || noChannel.size > 0);
     await refresh();
   }
 
   const MAX_NOTIFY_BATCH = 25;
 
+  // Leads (in the current tab and filters) that still need a stage message.
+  // On the All tab this means every lead outside Round 1; Round 1 leads are
+  // handled by the original approval send.
   function pendingInTab() {
-    return lastVisible.filter((r) => !fullyNotified(r));
+    return lastVisible.filter(
+      (r) => (activeTab === "all" ? stageOf(r) !== R1 : true) && !fullyNotified(r)
+    );
+  }
+
+  function pendingRound1() {
+    return lastVisible.filter(
+      (r) => stageOf(r) === R1 && truthy(lf(r, "Approve")) && !fullyNotified(r)
+    );
   }
 
   function isStageTab() {
     return activeTab !== "all" && activeTab !== R1;
   }
 
-  // The one "Send notifications now" button at the top of the page: on
-  // Round 1 / All it keeps its old job (handled in leads.js); on any other
-  // stage tab it sends that stage's not-yet-notified leads.
+  function isAllTab() {
+    return activeTab === "all";
+  }
+
+  // The one "Send notifications now" button at the top of the page.
+  //   Round 1: the original approval send (handled in leads.js).
+  //   Another stage tab: that stage's not-yet-notified leads.
+  //   All tab: Round 1 approvals AND every other stage's pending leads.
   function syncNotifyButton() {
     const btn = document.getElementById("sendNotifyBtn");
     if (!btn || btn.disabled) return;
-    btn.textContent = isStageTab()
-      ? `Send notifications now (${pendingInTab().length} pending)`
-      : "Send notifications now";
+    if (isStageTab()) {
+      btn.textContent = `Send notifications now (${pendingInTab().length} pending)`;
+    } else if (isAllTab()) {
+      btn.textContent = `Send notifications now (${pendingInTab().length + pendingRound1().length} pending)`;
+    } else {
+      btn.textContent = "Send notifications now";
+    }
   }
 
-  async function notifyCurrentStage() {
-    const leads = pendingInTab();
-    if (leads.length === 0) {
-      notice(`Everything in ${activeTab} has already been sent.`, false);
+  // r1 / r1Error: result of the Round 1 send when this runs from the All tab.
+  async function notifyCurrentStage(r1, r1Error) {
+    const prefix = [];
+    if (r1 && typeof r1.sent === "number") {
+      prefix.push("Round 1: sent " + r1.sent + (r1.retried ? `, ${r1.retried} to retry` : ""));
+    }
+    if (r1Error) prefix.push("Round 1 failed (" + r1Error + ")");
+
+    const all = pendingInTab();
+    const batch = all.slice(0, MAX_NOTIFY_BATCH);
+
+    if (batch.length === 0) {
+      const where = isAllTab() ? "the other stages" : activeTab;
+      notice(prefix.concat([`Everything in ${where} has already been sent`]).join(" · ") + ".", !!r1Error);
+      await refresh();
       return;
     }
-    if (leads.length > MAX_NOTIFY_BATCH) {
-      notice(`That is ${leads.length} leads. Narrow the list (search or cycle filter) to ${MAX_NOTIFY_BATCH} or fewer first.`, true);
-      return;
-    }
-    await notifyLeads(leads, activeTab, false);
+
+    await notifyLeads(batch, isAllTab() ? null : activeTab, false, prefix, all.length - batch.length);
   }
 
   async function announceStage(leadId, name, stage) {
@@ -1308,6 +1346,7 @@ const Pipeline = (() => {
     openCyclesModal,
     notifyCurrentStage,
     isStageTab,
+    isAllTab,
     syncNotifyButton,
     // forms
     cycleFieldHtml,

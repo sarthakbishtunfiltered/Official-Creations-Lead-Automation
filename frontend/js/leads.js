@@ -104,6 +104,26 @@ Auth.requireSession(() => {
           return;
         }
 
+        // On the All tab: Round 1 approvals (the original call) plus every
+        // other stage's pending leads, each to its own channel.
+        if (Pipeline.isAllTab()) {
+          let r1 = null;
+          let r1Error = "";
+          try {
+            r1 = await runNotifyNow();
+          } catch (e) {
+            console.error("Send notifications failed:", e);
+            r1Error = e.message || "error";
+          }
+          try {
+            await Pipeline.notifyCurrentStage(r1, r1Error);
+          } finally {
+            btn.disabled = false;
+            Pipeline.syncNotifyButton();
+          }
+          return;
+        }
+
         try {
           const result = await runNotifyNow();
           btn.textContent =
