@@ -69,6 +69,11 @@ const Pipeline = (() => {
 
   const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
+  // An old deployed Apps Script ignores the newer actions and answers with
+  // its "send pending approvals" result ({sent, retried}) instead.
+  const STALE_WEBAPP =
+    "Google is still running an OLD version of the Apps Script, so nothing was sent. In Apps Script: Deploy → Manage deployments → pencil → Version: New version → Deploy.";
+
   let activeTab = R1;
   let cycles = [];
   let cyclesOk = false; // Cycles tab exists and has headers
@@ -294,12 +299,7 @@ const Pipeline = (() => {
       ? 'Add a "Stage" column to the Leads sheet first.'
       : "Only the assignee, the Owner or an approver can move this lead.";
 
-    const notifyBtn =
-      stageOf(r) !== R1 && allowed && CONFIG.NOTIFY_WEBHOOK_URL
-        ? `<button type="button" class="btn-quiet mv-btn" data-notify-row="${r.__rowIndex}" title="Post this lead to the ${escapeHtml(stageOf(r))} channel again">Notify</button>`
-        : "";
-
-    return notifyBtn + moves
+    return moves
       .map((m) => {
         const attrs = `data-move-to="${escapeHtml(m.to)}" data-row="${r.__rowIndex}" ${
           allowed ? "" : `disabled title="${escapeHtml(why)}"`
@@ -309,6 +309,36 @@ const Pipeline = (() => {
           : `<button type="button" class="btn-quiet mv-btn" ${attrs}>${escapeHtml(m.label)}</button>`;
       })
       .join("");
+  }
+
+  // Which channels this lead was already announced on, for its CURRENT stage.
+  //   Round 1: the existing "Slack Notified" / "Telegram Notified" columns.
+  //   Others:  "Stage Slack Notified" / "Stage Telegram Notified" hold the
+  //            stage that was sent; it counts only if it is the current one.
+  function notifyState(r) {
+    const stage = stageOf(r);
+    if (stage === R1) {
+      if (!hasLeadCol("Slack Notified") && !hasLeadCol("Telegram Notified")) return null;
+      return { slack: truthy(lf(r, "Slack Notified")), telegram: truthy(lf(r, "Telegram Notified")) };
+    }
+    if (!hasLeadCol("Stage Slack Notified") && !hasLeadCol("Stage Telegram Notified")) return null;
+    return {
+      slack: norm(lf(r, "Stage Slack Notified")) === stage.toLowerCase(),
+      telegram: norm(lf(r, "Stage Telegram Notified")) === stage.toLowerCase(),
+    };
+  }
+
+  function notifyChips(r) {
+    const st = notifyState(r);
+    if (!st) return "";
+    const chip = (label, on) =>
+      `<span class="nchip ${on ? "on" : ""}" title="${on ? "Sent" : "Not sent yet"}">${label} ${on ? "✓" : "–"}</span>`;
+    return `<div class="nchips">${chip("Slack", st.slack)}${chip("Telegram", st.telegram)}</div>`;
+  }
+
+  function fullyNotified(r) {
+    const st = notifyState(r);
+    return !!st && st.slack && st.telegram;
   }
 
   function rowCells(r, isEditor) {
@@ -332,6 +362,7 @@ const Pipeline = (() => {
 
     const stageCell =
       `<td class="stage-cell"><span class="stage-pill ${STAGE_CLASS[stage]}">${escapeHtml(stage)}</span>` +
+      notifyChips(r) +
       (note ? `<div class="stage-note">${escapeHtml(note)}</div>` : "") +
       (meta || recHtml ? `<div class="stage-meta">${escapeHtml(meta)}${recHtml}</div>` : "") +
       "</td>";
@@ -377,6 +408,7 @@ const Pipeline = (() => {
   }
 
   function updateBulk() {
+    syncNotifyButton();
     const btn = document.getElementById("bulkCycleBtn");
     if (!btn) return;
     // Forget selections for leads that no longer exist.
@@ -387,18 +419,6 @@ const Pipeline = (() => {
     const n = selected.size;
     btn.classList.toggle("hidden", !(showSelectColumn() && n > 0));
     btn.textContent = `Add ${n} selected to a cycle`;
-
-    const nb = document.getElementById("notifyStageBtn");
-    if (nb) {
-      const show =
-        Auth.canApprove() &&
-        CONFIG.NOTIFY_WEBHOOK_URL &&
-        activeTab !== "all" &&
-        activeTab !== R1 &&
-        lastVisible.length > 0;
-      nb.classList.toggle("hidden", !show);
-      nb.textContent = `Notify ${activeTab} channel (${lastVisible.length})`;
-    }
   }
 
   // ----------------------------------------------------------
@@ -520,6 +540,9 @@ const Pipeline = (() => {
 
     const writes = [[stageHeader, move.to]];
     const optional = [
+      // Entering a stage is a new event: forget what was sent for the old one.
+      ["Stage Slack Notified", ""],
+      ["Stage Telegram Notified", ""],
       ["Stage Note", safeText(note)],
       ["Stage Updated At", at],
       ["Stage Updated By", by],
@@ -565,19 +588,28 @@ const Pipeline = (() => {
     if (!resp.ok) throw new Error("Webhook " + resp.status);
     const data = await resp.json().catch(() => ({}));
     if (data && data.ok === false) throw new Error(data.error || "The webhook reported an error.");
+    if (!data || data.retried !== undefined || (data.skipped !== true && !data.stage)) {
+      throw new Error(STALE_WEBAPP);
+    }
     return data;
   }
 
-  // Manual notify: one lead (row button) or every lead shown in this tab.
-  async function notifyLeads(leads, stage) {
+  // Manual notify: one lead (row button) or every not-yet-notified lead in
+  // this tab. resend=true sends again even if it was already sent.
+  async function notifyLeads(leads, stage, resend) {
     let sent = 0;
+    let already = 0;
     let failed = 0;
     let firstError = "";
 
     for (let i = 0; i < leads.length; i++) {
       notice(`Sending ${i + 1} of ${leads.length} to the ${stage} channel…`, false);
       try {
-        const data = await postStage(String(leads[i]["Lead ID"]).trim(), stage, true);
+        const data = await postStage(String(leads[i]["Lead ID"]).trim(), stage, !!resend);
+        if (data.already) {
+          already++;
+          continue;
+        }
         if (data.skipped) {
           notice(
             data.reason ||
@@ -593,32 +625,53 @@ const Pipeline = (() => {
       }
     }
 
-    if (failed) {
-      notice(`Sent ${sent}, failed ${failed} (${firstError}).`, true);
-    } else {
-      notice(`Sent ${sent} lead${sent === 1 ? "" : "s"} to the ${stage} channel.`, false);
-    }
+    const parts = [`Sent ${sent}`];
+    if (already) parts.push(`${already} already sent (skipped)`);
+    if (failed) parts.push(`${failed} failed (${firstError})`);
+    notice(parts.join(", ") + ".", failed > 0);
+    await refresh();
   }
 
   const MAX_NOTIFY_BATCH = 25;
 
+  function pendingInTab() {
+    return lastVisible.filter((r) => !fullyNotified(r));
+  }
+
+  function isStageTab() {
+    return activeTab !== "all" && activeTab !== R1;
+  }
+
+  // The one "Send notifications now" button at the top of the page: on
+  // Round 1 / All it keeps its old job (handled in leads.js); on any other
+  // stage tab it sends that stage's not-yet-notified leads.
+  function syncNotifyButton() {
+    const btn = document.getElementById("sendNotifyBtn");
+    if (!btn || btn.disabled) return;
+    btn.textContent = isStageTab()
+      ? `Send notifications now (${pendingInTab().length} pending)`
+      : "Send notifications now";
+  }
+
   async function notifyCurrentStage() {
-    if (activeTab === "all" || activeTab === R1) return;
-    const leads = lastVisible.slice();
-    if (leads.length === 0) return;
+    const leads = pendingInTab();
+    if (leads.length === 0) {
+      notice(`Everything in ${activeTab} has already been sent.`, false);
+      return;
+    }
     if (leads.length > MAX_NOTIFY_BATCH) {
       notice(`That is ${leads.length} leads. Narrow the list (search or cycle filter) to ${MAX_NOTIFY_BATCH} or fewer first.`, true);
       return;
     }
-    if (!confirm(`Send ${leads.length} message${leads.length === 1 ? "" : "s"} to the ${activeTab} Slack channel and Telegram chat?`)) return;
-    await notifyLeads(leads, activeTab);
+    await notifyLeads(leads, activeTab, false);
   }
 
   async function announceStage(leadId, name, stage) {
     try {
       const data = await postStage(leadId, stage, false);
-      if (data && data.skipped) return; // no channel set for this stage
+      if (data && data.skipped) return; // no channel set / already sent
       notice(name + ": posted to the " + stage + " channel.", false);
+      refresh(); // show the new Slack/Telegram ✓ markers
     } catch (e) {
       console.error("Stage notification failed:", e);
       notice(
@@ -767,12 +820,6 @@ const Pipeline = (() => {
   document.addEventListener("change", onMoveControl);
   document.addEventListener("click", onMoveControl);
 
-  document.addEventListener("click", (e) => {
-    const b = e.target.closest && e.target.closest("[data-notify-row]");
-    if (!b || b.disabled) return;
-    const lead = allLeadRows.find((r) => r.__rowIndex === Number(b.getAttribute("data-notify-row")));
-    if (lead) notifyLeads([lead], stageOf(lead));
-  });
 
   // ----------------------------------------------------------
   // Cycles: webhook, rules, forms
@@ -794,6 +841,7 @@ const Pipeline = (() => {
 
     const data = await resp.json().catch(() => ({}));
     if (data && data.ok === false) throw new Error(data.error || "The webhook reported an error.");
+    if (!data || data.retried !== undefined) throw new Error(STALE_WEBAPP);
     return data;
   }
 
@@ -1259,6 +1307,8 @@ const Pipeline = (() => {
     openBulkModal,
     openCyclesModal,
     notifyCurrentStage,
+    isStageTab,
+    syncNotifyButton,
     // forms
     cycleFieldHtml,
     cycleValue,

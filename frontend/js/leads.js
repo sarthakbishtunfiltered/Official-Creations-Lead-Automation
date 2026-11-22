@@ -51,7 +51,6 @@ Auth.requireSession(() => {
         <select id="assigneeFilter" class="hidden" data-avatar="1"></select>
         <select id="cycleFilter" class="hidden"></select>
         <button class="btn-primary hidden" id="bulkCycleBtn"></button>
-        <button class="btn-quiet hidden" id="notifyStageBtn"></button>
       </div>
       <div id="leadsTableWrap">Loading…</div>
     </div>
@@ -92,6 +91,19 @@ Auth.requireSession(() => {
         const original = btn.textContent;
         btn.disabled = true;
         btn.textContent = "Sending…";
+
+        // On Round 2 / Round 3 / Call Rejected ... the same button sends that
+        // stage's notifications; the result shows in the notice line.
+        if (Pipeline.isStageTab()) {
+          try {
+            await Pipeline.notifyCurrentStage();
+          } finally {
+            btn.disabled = false;
+            Pipeline.syncNotifyButton();
+          }
+          return;
+        }
+
         try {
           const result = await runNotifyNow();
           btn.textContent =
@@ -105,6 +117,7 @@ Auth.requireSession(() => {
           setTimeout(() => {
             btn.disabled = false;
             btn.textContent = original;
+            Pipeline.syncNotifyButton();
           }, 3000);
         }
       });
@@ -116,7 +129,6 @@ Auth.requireSession(() => {
   document.getElementById("assigneeFilter").addEventListener("change", renderTable);
   document.getElementById("cycleFilter").addEventListener("change", renderTable);
   document.getElementById("bulkCycleBtn").addEventListener("click", () => Pipeline.openBulkModal());
-  document.getElementById("notifyStageBtn").addEventListener("click", () => Pipeline.notifyCurrentStage());
 
   const manageBtn = document.getElementById("manageCyclesBtn");
   if (manageBtn) manageBtn.addEventListener("click", () => Pipeline.openCyclesModal().then(refresh));

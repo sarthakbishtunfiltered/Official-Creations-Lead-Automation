@@ -798,3 +798,14 @@ button { transition: border-color 0.15s ease, background-color 0.15s ease; }
 .cy-limit { width: 70px; padding: 4px 6px; }
 .head-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 table input.cy-limit { width: 72px; display: inline-block; padding: 4px 6px; }
+
+.nchips { display: flex; gap: 4px; margin-top: 5px; flex-wrap: wrap; }
+.nchip {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.05);
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.nchip.on { background: var(--ok-bg); color: var(--ok); }

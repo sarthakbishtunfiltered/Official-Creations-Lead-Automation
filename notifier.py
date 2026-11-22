@@ -7,7 +7,7 @@ Sends approved leads to:
 
 Features:
 - Includes Lead ID and Opportunity in notifications.
-- Reads Opportunity directly from column H.
+- Reads Opportunity from its header's column.
 - Tracks Slack and Telegram notifications independently.
 - Retries failed notifications without resending successful ones.
 
@@ -33,9 +33,6 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 LEADS_TAB = "Leads"
 
 TRUE_VALUES = {"true", "yes", "1", "✓"}
-
-# Google Sheets column H
-OPPORTUNITY_COLUMN = 8
 
 
 def is_true(value):
@@ -156,6 +153,7 @@ def main():
         "Approve",
         "Slack Notified",
         "Telegram Notified",
+        "Opportunity",
     ]
 
     missing_columns = [
@@ -169,20 +167,9 @@ def main():
             + ", ".join(missing_columns)
         )
 
-    # Opportunity is explicitly read from column H.
-    if len(headers) < OPPORTUNITY_COLUMN:
-        raise RuntimeError(
-            "The Leads sheet does not have column H."
-        )
-
-    opportunity_header = headers[OPPORTUNITY_COLUMN - 1]
-
-    if opportunity_header != "Opportunity":
-        raise RuntimeError(
-            f"Expected 'Opportunity' in column H, "
-            f"but found '{opportunity_header}'. "
-            "Check the Leads sheet headers before running."
-        )
+    # Opportunity is found by its header name, so extra columns
+    # (Stage, Cycle, Assigned To ...) can sit anywhere in the sheet.
+    opportunity_col = headers.index("Opportunity") + 1
 
     records = sheet.get_all_records()
 
@@ -206,11 +193,10 @@ def main():
             skipped_count += 1
             continue
 
-        # Explicitly read Opportunity from column H.
-        # This avoids depending on dictionary key ordering.
+        # Read Opportunity from its own column (found by header above).
         opportunity = sheet.cell(
             row_number,
-            OPPORTUNITY_COLUMN,
+            opportunity_col,
         ).value
 
         lead["Opportunity"] = opportunity or "—"

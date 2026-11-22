@@ -57,7 +57,7 @@ const CONFIG = {
   // (see notify_on_approve.gs's doGet / sendPendingNotifications).
   // Leave both blank to hide the button entirely.
   // Get the URL from Apps Script: Deploy -> New deployment -> Web app.
-  NOTIFY_WEBHOOK_URL: "https://script.google.com/macros/s/AKfycbxq1ijKKF_kuN1By39U6Ay5JY9iv6zc5FE6wSAnCTz5ggmCBPKIwHwlPEbCvpyVXlG2DA/exec",
+  NOTIFY_WEBHOOK_URL: "https://script.google.com/macros/s/AKfycbzkL7xMgH1b20OvtCpgpU94T0nJOqzM4ZmxUZmk2nfmq_Qb-L06RPOA_N4BKXjN6QAbHw/exec",
 
   // Must match the WEB_APP_SECRET Script Property you set in
   // notify_on_approve.gs. This is not a Slack/Telegram/GitHub

@@ -756,6 +756,9 @@ function postTelegramText_(text, chatOverride) {
 // The message is built from the Leads sheet, not from the request, and
 // only goes out if the lead really is in that stage right now.
 // Cycle messages (sendCycle) go to the Round 1 channel.
+//
+// Add two headers to the Leads tab so each channel is only sent once per
+// stage entry: "Stage Slack Notified" and "Stage Telegram Notified".
 // ----------------------------------------------------------------
 
 var STAGE_PROPS_ = {
@@ -768,6 +771,21 @@ var STAGE_PROPS_ = {
 };
 
 function notifyStage_(params) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) {
+    return { ok: false, error: "Another send is in progress. Try again in a moment." };
+  }
+  try {
+    return notifyStageLocked_(params);
+  } catch (exc) {
+    Logger.log("notifyStage error: " + exc);
+    return { ok: false, error: "Stage notification failed: " + exc };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function notifyStageLocked_(params) {
   var leadId = String(params.leadId || "").trim();
   var stageKey = String(params.stage || "").trim().toLowerCase();
   var cfg = STAGE_PROPS_[stageKey];
@@ -792,9 +810,11 @@ function notifyStage_(params) {
   if (lh["lead id"] === undefined) return { ok: false, error: 'Leads tab needs a "Lead ID" header.' };
 
   var row = null;
+  var rowNum = 0;
   for (var r = 1; r < lv.length; r++) {
     if (String(lv[r][lh["lead id"]]).trim() === leadId) {
       row = lv[r];
+      rowNum = r + 1;
       break;
     }
   }
@@ -808,6 +828,22 @@ function notifyStage_(params) {
   var currentStage = (get("stage") || "Round 1").toLowerCase();
   if (currentStage !== stageKey) {
     return { ok: true, skipped: true, reason: "Lead is no longer in " + cfg.label + "." };
+  }
+
+  // Per-channel "already sent for this stage" markers (columns "Stage Slack
+  // Notified" / "Stage Telegram Notified" hold the stage that was sent).
+  // They stop repeat messages. resend=1 (the "Notify again" button) ignores them.
+  var resend = String(params.resend || "") === "1";
+  var slackCol = lh["stage slack notified"];
+  var telegramCol = lh["stage telegram notified"];
+  var slackDone = !resend && slackCol !== undefined && get("stage slack notified").toLowerCase() === stageKey;
+  var telegramDone = !resend && telegramCol !== undefined && get("stage telegram notified").toLowerCase() === stageKey;
+
+  var needSlack = !!slackChannel && !slackDone;
+  var needTelegram = !!telegramChat && !telegramDone;
+
+  if (!needSlack && !needTelegram) {
+    return { ok: true, skipped: true, already: true, reason: "Already notified in " + cfg.label + "." };
   }
 
   var cycleText = "";
@@ -833,7 +869,6 @@ function notifyStage_(params) {
     }
   }
 
-  var resend = String(params.resend || "") === "1";
   var lines = [
     cfg.label + (resend ? " - lead (sent again)" : " - lead moved"),
     (get("business name") || "—") + " (" + leadId + ")",
@@ -850,8 +885,8 @@ function notifyStage_(params) {
 
   var text = lines.join("\n");
 
-  var slackOk = slackChannel ? postSlackText_(text, slackChannel) : null;
-  var telegramOk = telegramChat ? postTelegramText_(text, telegramChat) : null;
+  var slackOk = needSlack ? postSlackText_(text, slackChannel) : null;
+  var telegramOk = needTelegram ? postTelegramText_(text, telegramChat) : null;
 
   if (slackOk !== true && telegramOk !== true) {
     return {
@@ -860,5 +895,15 @@ function notifyStage_(params) {
     };
   }
 
-  return { ok: true, slack: slackOk, telegram: telegramOk, stage: cfg.label };
+  // Remember what went out so it is not sent twice.
+  if (slackOk === true && slackCol !== undefined) leadsSheet.getRange(rowNum, slackCol + 1).setValue(cfg.label);
+  if (telegramOk === true && telegramCol !== undefined) leadsSheet.getRange(rowNum, telegramCol + 1).setValue(cfg.label);
+
+  return {
+    ok: true,
+    slack: slackOk,
+    telegram: telegramOk,
+    stage: cfg.label,
+    tracked: slackCol !== undefined && telegramCol !== undefined,
+  };
 }
