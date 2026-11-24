@@ -321,7 +321,11 @@ const Pipeline = (() => {
       if (!hasLeadCol("Slack Notified") && !hasLeadCol("Telegram Notified")) return null;
       return { slack: truthy(lf(r, "Slack Notified")), telegram: truthy(lf(r, "Telegram Notified")) };
     }
-    if (!hasLeadCol("Stage Slack Notified") && !hasLeadCol("Stage Telegram Notified")) return null;
+    // Columns are created automatically on the first send; until then the
+    // lead simply counts as not sent yet.
+    if (!hasLeadCol("Stage Slack Notified") && !hasLeadCol("Stage Telegram Notified")) {
+      return { slack: false, telegram: false };
+    }
     return {
       slack: norm(lf(r, "Stage Slack Notified")) === stage.toLowerCase(),
       telegram: norm(lf(r, "Stage Telegram Notified")) === stage.toLowerCase(),

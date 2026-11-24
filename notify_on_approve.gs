@@ -757,8 +757,10 @@ function postTelegramText_(text, chatOverride) {
 // only goes out if the lead really is in that stage right now.
 // Cycle messages (sendCycle) go to the Round 1 channel.
 //
-// Add two headers to the Leads tab so each channel is only sent once per
-// stage entry: "Stage Slack Notified" and "Stage Telegram Notified".
+// Each channel is only sent once per stage entry. That is tracked in two
+// Leads columns, "Stage Slack Notified" and "Stage Telegram Notified"
+// (they hold the stage name that was sent). They are added automatically
+// at the far right the first time a stage message is sent.
 // ----------------------------------------------------------------
 
 var STAGE_PROPS_ = {
@@ -822,7 +824,7 @@ function notifyStageLocked_(params) {
 
   var get = function (col) {
     var idx = lh[col];
-    return idx === undefined ? "" : String(row[idx]).trim();
+    return idx === undefined || row[idx] == null ? "" : String(row[idx]).trim();
   };
 
   var currentStage = (get("stage") || "Round 1").toLowerCase();
@@ -834,6 +836,17 @@ function notifyStageLocked_(params) {
   // Notified" / "Stage Telegram Notified" hold the stage that was sent).
   // They stop repeat messages. resend=1 (the "Notify again" button) ignores them.
   var resend = String(params.resend || "") === "1";
+  // The tracking columns are created at the far right if they are missing,
+  // so repeat-protection works without any manual setup.
+  ["Stage Slack Notified", "Stage Telegram Notified"].forEach(function (name) {
+    var key = name.toLowerCase();
+    if (lh[key] === undefined) {
+      var newCol = leadsSheet.getLastColumn() + 1;
+      leadsSheet.getRange(1, newCol).setValue(name);
+      lh[key] = newCol - 1;
+    }
+  });
+
   var slackCol = lh["stage slack notified"];
   var telegramCol = lh["stage telegram notified"];
   var slackDone = !resend && slackCol !== undefined && get("stage slack notified").toLowerCase() === stageKey;
