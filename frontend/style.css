@@ -809,3 +809,13 @@ table input.cy-limit { width: 72px; display: inline-block; padding: 4px 6px; }
   white-space: nowrap;
 }
 .nchip.on { background: var(--ok-bg); color: var(--ok); }
+
+.eco-links { display: flex; flex-direction: column; gap: 4px; margin-bottom: 14px; }
+.eco-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.eco-links a { color: var(--ink); font-size: 13px; text-decoration: none; }
+.eco-links a:hover { text-decoration: underline; }

@@ -44,6 +44,12 @@ function getNavigationPath(filename) {
 // APPLICATION SHELL
 // ============================================================
 
+// The rest of the Official Creations ecosystem, linked from the sidebar.
+const ECOSYSTEM_LINKS = [
+  ["Studio", "https://studio.officialcreations.online"],
+  ["Main website", "https://officialcreations.online"],
+];
+
 function renderShell(activePage) {
   const items = [
     ["dashboard.html", "Dashboard"],
@@ -98,6 +104,14 @@ function renderShell(activePage) {
       </nav>
 
       <div class="sidebar-foot">
+
+        <div class="eco-links">
+          <div class="eco-title">Ecosystem</div>
+          ${ECOSYSTEM_LINKS.map(
+            ([label, url]) =>
+              `<a href="${url}" target="_blank" rel="noopener">${label} ↗</a>`
+          ).join("")}
+        </div>
 
         <div>Signed in</div>
 
